@@ -139,12 +139,11 @@ class TestPipeline:
         assert stats["devices_total"] >= 1, stats
         assert stats["readings_last_hour"] > 0, stats
 
-    def test_every_device_is_registered_with_a_site(self, http):
+    def test_every_device_has_a_site_and_a_known_health_state(self, http):
         devices = http.get("/api/v1/devices").json()["devices"]
         assert devices
         for device in devices:
             assert device["site_id"]
-            assert device["fw_version"]
             assert device["health"] in {
                 "healthy",
                 "stale",
@@ -153,6 +152,55 @@ class TestPipeline:
                 "offline",
                 "never_seen",
             }
+
+    def test_a_device_that_has_reported_carries_its_firmware_version(self, http):
+        """Firmware version comes from telemetry, so only a device that has
+        published has one.
+
+        A row can exist without it: certs-register creates a row for every
+        provisioned certificate, including devices that have never connected.
+        That is a real and correct state, and `never_seen` is the health branch
+        for it. An earlier version of this test asserted every row had a
+        firmware version and failed the moment certificate registration was
+        wired up.
+        """
+        devices = http.get("/api/v1/devices").json()["devices"]
+
+        seen = [d for d in devices if d["last_seen"] is not None]
+        assert seen, "no device has reported at all"
+
+        for device in seen:
+            assert device["fw_version"], device
+            assert device["schema_version"], device
+
+        for device in devices:
+            if device["last_seen"] is None:
+                # Provisioned but never connected. It must say so rather than
+                # appearing healthy by omission.
+                assert device["health"] == "never_seen", device
+
+    def test_provisioned_devices_have_a_recorded_certificate(self, http):
+        """The link certs-register exists to create.
+
+        Without it certificate_expires_at is null for the whole fleet, the
+        certificate-expiring rule has nothing to evaluate and therefore can
+        never fire, and the fleet health query reports zero certificates
+        expiring soon whatever the truth.
+        """
+        devices = http.get("/api/v1/devices").json()["devices"]
+
+        with_certificate = [d for d in devices if d["certificate_expires_at"]]
+        assert with_certificate, (
+            "no device has a recorded certificate: the certs-register job has "
+            "not run, so the certificate-expiring rule cannot fire"
+        )
+
+        for device in with_certificate:
+            # A negative figure would mean the platform is holding an expired
+            # certificate for a device the broker is still accepting, which
+            # would mean the CRL is not being enforced.
+            assert device["certificate_days_remaining"] is not None, device
+            assert device["certificate_days_remaining"] > 0, device
 
     async def test_raw_readings_reached_timescaledb(self, pool):
         count = await pool.fetchval(

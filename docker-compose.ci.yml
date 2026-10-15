@@ -15,6 +15,13 @@
 # **A smaller fleet.** Ten devices and a full fault spread is right for a demo.
 # For a test run it is six devices with every fault active from the start, which
 # reaches the interesting states sooner.
+#
+# Note that DEVICE_COUNT is left at ten, so the PKI job issues ten certificates
+# while only six devices ever publish. That is deliberate: the remaining four
+# are provisioned-but-never-connected, which is a real state a fleet is always
+# in during a rollout, and it is the only thing that exercises the `never_seen`
+# health branch and the certificate registry's handling of a device with no
+# telemetry.
 
 services:
   pki:
