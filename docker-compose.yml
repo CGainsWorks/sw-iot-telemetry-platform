@@ -263,6 +263,17 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Semantically right, and also necessary mechanically. The
+      # certificate-expiring rule reads devices.certificate_expires_at, which
+      # only certs-register populates, so evaluating before it has run would
+      # report a clean fleet whatever the truth.
+      #
+      # Mechanically: `compose up --wait` treats a container that exits as a
+      # failure unless some service declares it a
+      # service_completed_successfully dependency. Without this edge, a
+      # perfectly successful run of certs-register fails the whole `up`.
+      certs-register:
+        condition: service_completed_successfully
     environment:
       <<: *app-env
       ALERT_RULES_PATH: /app/config/alert_rules.yaml

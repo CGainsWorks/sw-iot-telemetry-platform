@@ -623,9 +623,11 @@ class TestAlerting:
         device = "duty-cycle-test-device"
         now = datetime.now(UTC).replace(second=0, microsecond=0)
 
-        # 46 minutes: idle for the first half of each 20 minute cycle, running
-        # for the rest. The floor is identical in both halves of the window.
-        for minutes_ago in range(46, 0, -1):
+        # 92 minutes, to cover the rule's 90 minute window. Idle for the first
+        # 8 minutes of each 20 minute cycle, running for the rest, so each
+        # 45 minute half contains two full cycles and therefore an idle period.
+        # The floor is identical in both halves, which is the point.
+        for minutes_ago in range(92, 0, -1):
             running = (minutes_ago % 20) < 12
             level = 0.32 if running else 0.012
             await pool.execute(
@@ -666,10 +668,12 @@ class TestAlerting:
         device = "bearing-fault-test-device"
         now = datetime.now(UTC).replace(second=0, microsecond=0)
 
-        for minutes_ago in range(46, 0, -1):
-            age = 46 - minutes_ago  # 0 oldest, 45 newest
-            # Floor doubles roughly every 15 minutes.
-            floor = 0.012 * (2.0 ** (age / 15.0))
+        for minutes_ago in range(92, 0, -1):
+            age = 92 - minutes_ago  # 0 oldest, 91 newest
+            # Floor doubles roughly every 30 minutes, so it climbs by about 8x
+            # across the window: well above the 0.0005 g per minute threshold
+            # and nothing like what duty cycling produces.
+            floor = 0.012 * (2.0 ** (age / 30.0))
             running = (minutes_ago % 20) < 12
             level = (0.32 + floor) if running else floor
             await pool.execute(
@@ -701,6 +705,56 @@ class TestAlerting:
             assert await wait_for(
                 fired, timeout_s=60
             ), "a rising idle floor did not trip the vibration trend rule"
+        finally:
+            await pool.execute("DELETE FROM alerts WHERE device_id = $1", device)
+            await pool.execute("DELETE FROM telemetry_1m_live WHERE device_id = $1", device)
+
+    async def test_a_half_window_that_never_went_idle_is_not_judged(self, pool):
+        """The residual false positive the spread_ratio guard exists for.
+
+        A machine idle through the older half of the window and running
+        continuously through the newer half has no idle floor to measure in the
+        newer half. Its minimum there sits at the running level, so comparing
+        floors reports an enormous rise that is purely the duty cycle.
+
+        Widening the window makes this rare; the guard is what makes it safe.
+        """
+        device = "no-idle-half-test-device"
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+
+        for minutes_ago in range(92, 0, -1):
+            # Older half idle, newer half running flat out and never idle.
+            running = minutes_ago <= 46
+            level = 0.32 if running else 0.012
+            await pool.execute(
+                """
+                INSERT INTO telemetry_1m_live (
+                    bucket, device_id, site_id, metric, avg_value, min_value,
+                    max_value, last_value, sample_count, sum_squares, updated_at
+                )
+                VALUES ($1, $2, 'site-test', 'vibration_rms_g', $3, $4, $5, $3, 30, 0, now())
+                ON CONFLICT (device_id, metric, bucket) DO UPDATE
+                    SET avg_value = EXCLUDED.avg_value, min_value = EXCLUDED.min_value,
+                        max_value = EXCLUDED.max_value
+                """,
+                now - timedelta(minutes=minutes_ago),
+                device,
+                level,
+                # Tight spread within each bucket: the newer half never dips.
+                level * 0.97,
+                level * 1.03,
+            )
+
+        try:
+            await asyncio.sleep(35)
+            fired = await pool.fetchval(
+                "SELECT count(*) FROM alerts "
+                "WHERE device_id = $1 AND rule_id = 'vibration-trend' AND state = 'firing'",
+                device,
+            )
+            assert (
+                fired == 0
+            ), "a half-window with no idle period was treated as a floor measurement"
         finally:
             await pool.execute("DELETE FROM alerts WHERE device_id = $1", device)
             await pool.execute("DELETE FROM telemetry_1m_live WHERE device_id = $1", device)

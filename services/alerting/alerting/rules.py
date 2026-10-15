@@ -146,6 +146,17 @@ class Rule:
     #: produce a stream of fire and resolve pairs.
     recovery_s: float = 120.0
 
+    #: For rate_of_change only: the minimum relative spread, (max - min) / max,
+    #: that each half of the window must show before its floor is believed.
+    #:
+    #: Exists because a duty-cycled machine swings between two levels, and a
+    #: half-window that happened to sit entirely inside a running stretch has a
+    #: minimum at the running level rather than at the idle floor. Requiring both
+    #: halves to have seen the signal vary proves each one observed both states.
+    #: Zero disables the check, which is right for a signal that is not duty
+    #: cycled.
+    spread_ratio: float = 0.0
+
     scope: Scope = field(default_factory=Scope)
     channels: tuple[str, ...] = ("log",)
     #: Minimum seconds between repeat notifications while an alert stays firing.
@@ -171,6 +182,12 @@ class Rule:
             )
         if not self.channels:
             raise RuleError(f"rule {self.rule_id}: at least one channel is required")
+        if not 0.0 <= self.spread_ratio < 1.0:
+            raise RuleError(
+                f"rule {self.rule_id}: spread_ratio must be at least 0 and below 1, "
+                f"got {self.spread_ratio}. A ratio of 1 or more can never be met, "
+                "so the rule would silently never fire."
+            )
 
     @property
     def min_buckets(self) -> int:
@@ -190,6 +207,7 @@ class Rule:
             "threshold": self.threshold,
             "window_s": self.window_s,
             "for_s": self.for_s,
+            "spread_ratio": self.spread_ratio,
             "recovery_s": self.recovery_s,
             "renotify_s": self.renotify_s,
             "scope": self.scope.as_dict(),
@@ -268,6 +286,7 @@ def _rule_from_dict(raw: dict[str, Any]) -> Rule:
         window_s=parse_duration(raw.get("window", "5m")),
         for_s=parse_duration(raw.get("for", 0)),
         recovery_s=parse_duration(raw.get("recovery", "2m")),
+        spread_ratio=float(raw.get("spread_ratio", 0.0)),
         scope=Scope.parse(raw.get("scope")),
         channels=tuple(str(c) for c in channels),
         renotify_s=parse_duration(raw.get("renotify", "1h")),

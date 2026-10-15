@@ -41,7 +41,6 @@ flowchart LR
     classDef built fill:#1f6feb,stroke:#58a6ff,color:#fff
     classDef unbuilt fill:#30363d,stroke:#8b949e,color:#c9d1d9,stroke-dasharray: 4 3
     class SIM,BROKER,INGEST,STREAM,PROC,DB,API,ALERT,WEB,DLQ,BQ built
-    class FW unbunbuilt
     class FW unbuilt
 ```
 
@@ -163,21 +162,23 @@ $ curl -s 'localhost:8000/api/v1/telemetry?device_id=esp32-000001&metric=tempera
 }
 ```
 
-## Three things that were wrong, and how they were found
+## Four things that were wrong, and how they were found
 
 Worth recording, because each was caught by something in this repository rather
 than by inspection.
 
-**The vibration trend rule fired on healthy machines.** It took the slope of the
-mean vibration over a window. The machines are duty cycled, so the mean swings
-between 0.012 g idle and 0.32 g running every few minutes, and the rule fired on
-every motor start. It produced two confident alerts about bearing faults on
-devices that had none. Switching to the per-bucket minimum was also wrong,
-because a bucket in which the motor ran all minute has its minimum at the
-running level. What works is `min(min_value)` compared between the two **halves**
-of a window that spans more than one duty cycle: that is genuinely the idle
-floor, which duty cycling leaves alone and a developing fault lifts. Both
-directions are now tested. [Full account.](docs/alert_catalogue.md#vibration-trend-tracks-the-idle-floor-not-the-average)
+**The vibration trend rule fired on healthy machines, three times over.** It
+took the slope of the mean vibration over a window. The machines are duty
+cycled, so the mean swings between 0.012 g idle and 0.32 g running every few
+minutes, and the rule fired on every motor start. Switching to the per-bucket
+minimum was also wrong, because a bucket in which the motor ran all minute has
+its minimum at the running level. Comparing `min(min_value)` between the two
+**halves** of the window was closer, and still fired, because a 22 minute half
+against a 40 minute duty cycle can sit entirely inside a running stretch. What
+works is a 90 minute window, so each half spans more than a full cycle, plus a
+guard that refuses to believe a half's floor unless that half was observed both
+idle and running. All three directions are now tested.
+[Full account.](docs/alert_catalogue.md#vibration-trend-tracks-the-idle-floor-not-the-average)
 
 **The threshold rule fired or did not depending on clock alignment.** A
 two-minute hold filtered as `bucket > now() - 120s` spans exactly 120 seconds,

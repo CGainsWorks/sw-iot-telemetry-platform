@@ -176,19 +176,32 @@ rules:
     aggregation: min
     operator: ">"
     threshold: 0.0005
-    window: 45m
+    # 90 minutes so that each HALF spans 45, comfortably longer than the longest
+    # duty cycle in the fleet at 40 minutes. A 45 minute window gave 22 minute
+    # halves, and a 22 minute half can sit entirely inside a 30 minute running
+    # stretch, which put the "floor" at the running level and fired the rule on a
+    # healthy machine.
+    window: 90m
     recovery: 45m
+    # Each half must have seen the signal vary by at least 60 per cent of its own
+    # peak, which for a duty-cycled machine means the half contained both an idle
+    # and a running period. A half that only ever saw the motor running has not
+    # measured a floor at all, so comparing floors across it is guesswork. The
+    # window length above makes this almost always true; the guard is what
+    # catches the case where it is not.
+    spread_ratio: 0.6
     channels: [log, webhook]
     description: >
       The idle floor of the vibration signal rising by more than 0.0005 g per
-      minute, measured between the two halves of the window. Deliberately on min
-      rather than avg: these machines are duty cycled, so the mean jumps from
-      about 0.012 g to about 0.32 g every time the motor starts, and a slope
-      taken on the mean fires on every start. The floor is the discriminating
-      signal, because duty cycling moves between two fixed levels and leaves it
-      alone while a developing bearing fault lifts the whole signal including
-      the floor. The window spans more than one duty cycle so that each half
-      contains an idle period to take a floor from.
+      minute, measured between the two halves of a 90 minute window.
+      Deliberately on min rather than avg: these machines are duty cycled, so
+      the mean jumps from about 0.012 g to about 0.32 g every time the motor
+      starts, and a slope taken on the mean fires on every start. The floor is
+      the discriminating signal, because duty cycling moves between two fixed
+      levels and leaves it alone while a developing bearing fault lifts the whole
+      signal including the floor. Each half spans more than one duty cycle so it
+      contains an idle period to take a floor from, and spread_ratio refuses to
+      compare a half that did not.
 
   - id: high-vibration
     name: High vibration

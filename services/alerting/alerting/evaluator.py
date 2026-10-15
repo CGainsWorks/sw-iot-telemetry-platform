@@ -235,6 +235,15 @@ class Evaluator:
         A one-minute bucket during which the motor ran the whole minute has a
         ``min_value`` at the running level, so per-bucket minima track the duty
         cycle just as faithfully as the mean does.
+
+        And each **half** has to span a full duty cycle, not merely the window as
+        a whole. A 45 minute window against a 40 minute duty cycle gives 22
+        minute halves, and a 22 minute half can sit entirely inside a 30 minute
+        running stretch, at which point its "floor" is the running level and the
+        rule fires on a healthy machine again. Hence the ``spread_ratio`` guard
+        below: a half is only usable if the signal was observed both idle and
+        running within it. A half that never went idle has not measured a floor,
+        and comparing against it is guesswork.
         """
         operator = OPERATORS[rule.operator]
 
@@ -258,6 +267,7 @@ class Evaluator:
             rule.window_s,
             rule.threshold,
             min_buckets_per_half,
+            rule.spread_ratio,
         ]
         clauses = ["metric = $1", "bucket > now() - make_interval(secs => $2)"]
         clauses.extend(_scope_clauses(rule, params))
@@ -269,8 +279,12 @@ class Evaluator:
                     site_id,
                     (bucket >= now() - make_interval(secs => $2 / 2.0)) AS recent,
                     {level_expr} AS level,
-                    count(*)     AS buckets,
-                    max(bucket)  AS latest
+                    -- Lowest and highest the signal reached anywhere in this
+                    -- half, used only to decide whether the half is usable.
+                    min(min_value) AS half_low,
+                    max(max_value) AS half_high,
+                    count(*)       AS buckets,
+                    max(bucket)    AS latest
                 FROM telemetry_1m_live
                 WHERE {' AND '.join(clauses)}
                 GROUP BY device_id, site_id, recent
@@ -279,11 +293,15 @@ class Evaluator:
                 SELECT
                     device_id,
                     site_id,
-                    max(level)   FILTER (WHERE NOT recent) AS earlier_level,
-                    max(level)   FILTER (WHERE recent)     AS later_level,
-                    max(buckets) FILTER (WHERE NOT recent) AS earlier_buckets,
-                    max(buckets) FILTER (WHERE recent)     AS later_buckets,
-                    max(latest)                            AS observed_at
+                    max(level)     FILTER (WHERE NOT recent) AS earlier_level,
+                    max(level)     FILTER (WHERE recent)     AS later_level,
+                    max(buckets)   FILTER (WHERE NOT recent) AS earlier_buckets,
+                    max(buckets)   FILTER (WHERE recent)     AS later_buckets,
+                    max(half_low)  FILTER (WHERE NOT recent) AS earlier_low,
+                    max(half_high) FILTER (WHERE NOT recent) AS earlier_high,
+                    max(half_low)  FILTER (WHERE recent)     AS later_low,
+                    max(half_high) FILTER (WHERE recent)     AS later_high,
+                    max(latest)                              AS observed_at
                 FROM halves
                 GROUP BY device_id, site_id
             )
@@ -297,6 +315,20 @@ class Evaluator:
               AND later_level IS NOT NULL
               AND earlier_buckets >= $4::int
               AND later_buckets   >= $4::int
+              -- Both halves must have seen the signal vary by at least
+              -- spread_ratio, which for a duty-cycled machine means both halves
+              -- contained an idle period and a running period. A half that only
+              -- ever saw the motor running has not measured a floor, so
+              -- comparing floors across it is meaningless. Set spread_ratio to 0
+              -- in a rule for a signal that is not duty cycled.
+              AND (
+                    $5::float8 <= 0
+                 OR (
+                        earlier_high > 0 AND later_high > 0
+                    AND (earlier_high - earlier_low) / earlier_high >= $5::float8
+                    AND (later_high   - later_low)   / later_high   >= $5::float8
+                    )
+                  )
               AND (later_level - earlier_level) / ($2 / 120.0) {operator} $3
         """
 

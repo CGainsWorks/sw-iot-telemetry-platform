@@ -21,7 +21,7 @@ outcome available to an alerting system.
 | `weak-signal` | info | mean `rssi_dbm` < -85 | 10m | log |
 | `device-offline` | warning | no telemetry for 10m | — | log, webhook |
 | `sensor-flatline` | warning | `temperature_c` range ≤ 0.05 over 20m | 20m | log, webhook |
-| `vibration-trend` | warning | idle floor of `vibration_rms_g` rising > 0.0005 g/min | — | log, webhook |
+| `vibration-trend` | warning | idle floor of `vibration_rms_g` rising > 0.0005 g/min over 90m | — | log, webhook |
 | `high-vibration` | critical | mean `vibration_rms_g` > 2.0 | 5m | log, webhook |
 | `dead-letter-spike` | warning | > 50 rejected messages in 15m | — | log, webhook |
 | `certificate-expiring` | warning | certificate expires within 30 days | — | log, webhook |
@@ -106,18 +106,29 @@ the floor alone. That was still wrong: a one-minute bucket during which the
 motor ran for the whole minute has a `min_value` at the **running** level, so
 per-bucket minima track the duty cycle just as faithfully as the mean does.
 
-The version that works takes `min(min_value)` **across each half of the window**
-and compares the two halves. That is genuinely the idle floor, because the window
-spans more than one duty cycle so each half contains an idle period. Duty cycling
-moves between two fixed levels and leaves the floor where it is; a developing
-bearing fault lifts the whole signal, floor included.
+The third version takes `min(min_value)` **across each half of the window** and
+compares the two halves. That is genuinely the idle floor, provided each half
+contains an idle period. Comparing halves rather than endpoints matters on its
+own too: endpoint sampling is at the mercy of whatever those two particular
+minutes contained.
 
-Comparing halves rather than endpoints also matters on its own: endpoint sampling
-is at the mercy of whatever those two particular minutes contained.
+And it was still not enough. The window was 45 minutes, giving 22 minute halves,
+against duty cycles of 20 to 40 minutes. A 22 minute half can sit entirely inside
+a 30 minute running stretch, at which point its minimum is the running level and
+the rule fires on a healthy machine for the third time. It did, once more, on a
+device with no fault.
 
-Both directions are now tested against the running stack:
-`test_a_duty_cycled_machine_does_not_trip_the_vibration_trend_rule` and
-`test_a_rising_idle_floor_does_trip_the_vibration_trend_rule`.
+So the window is now 90 minutes, making each half 45, comfortably longer than the
+longest duty cycle in the fleet. And because "comfortably longer" is a statement
+about this fleet rather than a guarantee, a `spread_ratio` of 0.6 requires each
+half to have seen the signal vary by at least 60 per cent of its own peak before
+its floor is believed at all. A half that only ever saw the motor running has not
+measured a floor, and the rule declines to judge rather than guessing.
+
+All three directions are tested against the running stack:
+`test_a_duty_cycled_machine_does_not_trip_the_vibration_trend_rule`,
+`test_a_rising_idle_floor_does_trip_the_vibration_trend_rule` and
+`test_a_half_window_that_never_went_idle_is_not_judged`.
 
 ### `device-offline` waits ten minutes, not one
 
@@ -155,7 +166,7 @@ would also mean every rule needs its own query planner and its own failure modes
 | --- | --- | --- |
 | `threshold` | `telemetry_1m_live` | the newest `for`-worth of buckets all breach |
 | `flatline` | `telemetry_1m_live` | the range across the window is below a limit |
-| `rate_of_change` | `telemetry_1m_live` | the slope between window halves exceeds a limit |
+| `rate_of_change` | `telemetry_1m_live` | the slope between window halves exceeds a limit, and both halves are usable |
 | `offline` | `devices` | `now() - last_seen` exceeds a limit |
 | `dead_letter_rate` | `dead_letters` | the count in a window exceeds a limit |
 | `certificate_expiry` | `devices` | `certificate_expires_at` is within N days |
