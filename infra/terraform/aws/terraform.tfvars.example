@@ -1,0 +1,42 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+project     = "iot-telemetry"
+environment = "dev"
+region      = "eu-west-2"
+
+# --- Network ---------------------------------------------------------------
+vpc_cidr                = "10.60.0.0/16"
+availability_zone_count = 3
+
+# One NAT gateway instead of three saves about 70 USD a month and makes egress a
+# single point of failure. Fine for dev, not for prod.
+single_nat_gateway = true
+
+# --- Streaming -------------------------------------------------------------
+# Size shards from the benchmark: one shard takes 1 MB/s or 1000 records/s.
+# A fleet of 500 devices at 1 message every 10 seconds with 5 readings each is
+# 250 records/s, so one shard is ample. Two gives headroom for a backlog replay.
+kinesis_mode            = "PROVISIONED"
+kinesis_shard_count     = 2
+kinesis_retention_hours = 24
+
+# --- Compute ---------------------------------------------------------------
+kubernetes_version  = "1.31"
+node_instance_types = ["m7g.large", "m6g.large"]
+node_capacity_type  = "ON_DEMAND"
+node_min_size       = 2
+node_desired_size   = 3
+node_max_size       = 6
+
+# --- Storage ---------------------------------------------------------------
+archive_retention_days = 90
+archive_expiry_days    = 730
+
+# --- IoT -------------------------------------------------------------------
+tenant         = "acme"
+iot_thing_type = "telemetry-sensor"
+
+# Leave false. Enabling it puts a certificate authority private key into
+# Terraform state in plain text. See docs/provisioning.md for the production
+# path.
+create_iot_ca = false

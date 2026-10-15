@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+
+# Secrets and generated PKI. Never commit private keys.
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.srl
+.env
+.env.*
+!.env.example
+
+# Local data and results
+data/
+*.parquet
+*.duckdb
+bench/results/*
+!bench/results/.gitkeep
+docs/img/*.png
+!docs/img/.gitkeep
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# PlatformIO
+edge/firmware/.pio/

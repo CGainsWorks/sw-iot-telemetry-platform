@@ -1,0 +1,179 @@
+# TimescaleDB as a StatefulSet.
+#
+# This is the piece Terraform does not create, and the reason is worth stating
+# plainly: RDS does not offer the TimescaleDB extension, so the choices are
+# Timescale Cloud, which is a managed service in someone else's account, or
+# self-hosting. A single-replica StatefulSet is honest about what it is: fine
+# for a demonstration and for a development cluster, and not what anyone should
+# put a production fleet's data into without a replica, a backup schedule and
+# someone who knows how to fail it over.
+#
+# docs/architecture.md sets out what production would use instead.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: timescaledb
+spec:
+  # Headless: a StatefulSet member gets a stable DNS name of its own, which is
+  # what a future replica set needs to find its peers.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: timescaledb
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: timescaledb
+    app.kubernetes.io/part-of: iot-telemetry-platform
+spec:
+  serviceName: timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: timescaledb
+    spec:
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      # Spot nodes are reclaimed at two minutes' notice. The stateless services
+      # tolerate that; a database with one replica does not.
+      tolerations: []
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: eks.amazonaws.com/capacityType
+                    operator: NotIn
+                    values: ["SPOT"]
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb:2.17.2-pg16
+          args:
+            - postgres
+            - -c
+            - shared_preload_libraries=timescaledb
+            - -c
+            - timescaledb.max_background_workers=8
+            - -c
+            - max_worker_processes=16
+            - -c
+            - max_connections=200
+            # Sized for the 4 GiB request below. The usual rule is a quarter of
+            # available memory for shared_buffers.
+            - -c
+            - shared_buffers=1GB
+            - -c
+            - effective_cache_size=3GB
+            - -c
+            - work_mem=32MB
+            - -c
+            - maintenance_work_mem=256MB
+            # gp3 is network storage, so random reads cost far less than the
+            # spinning-disk default of 4.0 assumes. Leaving it at the default
+            # pushes the planner towards sequential scans it does not need.
+            - -c
+            - random_page_cost=1.1
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef: { name: telemetry-config, key: PG_DATABASE }
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef: { name: telemetry-config, key: PG_USER }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: telemetry-secrets, key: PG_PASSWORD }
+            # The image initialises into a subdirectory so that a lost+found at
+            # the volume root does not make initdb refuse to run.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: TIMESCALEDB_TELEMETRY
+              value: "off"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              # No CPU limit on purpose: a compression job or a continuous
+              # aggregate refresh is bursty, and throttling it makes the whole
+              # write path slower for no benefit. Memory is limited because
+              # overrunning it is what gets the node into trouble.
+              memory: 6Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # postgres writes its own config
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "telemetry", "-d", "telemetry"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "telemetry", "-d", "telemetry"]
+            # Far more forgiving than the readiness probe. A long checkpoint can
+            # make the server briefly unresponsive, and restarting a database
+            # for that reason turns a pause into an outage.
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+      terminationGracePeriodSeconds: 120
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            # 30 days of raw telemetry for a fleet of 500 devices at 5 readings
+            # every 10 seconds is roughly 100 GB before compression. Compression
+            # takes it well under that after the first week. See
+            # docs/cost_model.md for the working.
+            storage: 200Gi
+---
+# gp3 rather than the gp2 default: same price per gigabyte, and the baseline
+# throughput is configurable rather than tied to volume size.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "6000"
+  throughput: "250"
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain

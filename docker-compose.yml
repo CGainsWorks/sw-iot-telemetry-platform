@@ -1,0 +1,325 @@
+# The whole platform on one machine.
+#
+#   docker compose up --build      brings up everything, including a running fleet
+#   make demo                      the same thing, then opens the dashboard
+#
+# Startup is ordered by health rather than by sleep. Two one-shot jobs run before
+# anything else: `pki` issues the certificates the broker and every client need,
+# and `migrate` applies the database schema. Both exit when they are done, and the
+# long-lived services wait on `service_completed_successfully`.
+
+name: iot-telemetry
+
+x-app-env: &app-env
+  OBS_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  OBS_LOG_JSON: "true"
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  PG_HOST: timescaledb
+  PG_PORT: "5432"
+  PG_DATABASE: ${PG_DATABASE:-telemetry}
+  PG_USER: ${PG_USER:-telemetry}
+  PG_PASSWORD: ${PG_PASSWORD:-telemetry}
+
+services:
+  # ---------------------------------------------------------------------------
+  # One-shot: device PKI.
+  # ---------------------------------------------------------------------------
+  pki:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: iot-telemetry/tools:local
+    environment:
+      CERTS_DIR: /certs
+      DEVICE_COUNT: ${DEVICE_COUNT:-10}
+      DEVICE_PREFIX: ${DEVICE_PREFIX:-esp32}
+      BROKER_CN: mosquitto
+    volumes:
+      - certs:/certs
+    command: ["bash /app/scripts/provision_fleet.sh"]
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # MQTT broker. Mutual TLS only, no anonymous listener. Stands in for AWS IoT
+  # Core; see docs/architecture.md for what differs.
+  # ---------------------------------------------------------------------------
+  mosquitto:
+    build:
+      context: .
+      dockerfile: docker/mosquitto.Dockerfile
+    image: iot-telemetry/mosquitto:local
+    depends_on:
+      pki:
+        condition: service_completed_successfully
+    ports:
+      - "${MQTT_PORT:-8883}:8883"
+    volumes:
+      - certs:/mosquitto/certs:ro
+    healthcheck:
+      # Completes a real mutual-TLS handshake and a subscribe rather than just
+      # probing the port, so a broken certificate or ACL fails here instead of
+      # surfacing as a confusing reconnect loop in the bridge.
+      test:
+        - CMD-SHELL
+        - >-
+          mosquitto_sub -h localhost -p 8883
+          --cafile /mosquitto/certs/ca/ca.crt
+          --cert /mosquitto/certs/services/broker-health.crt
+          --key /mosquitto/certs/services/broker-health.key
+          -t '$$SYS/broker/uptime' -C 1 -W 3 >/dev/null
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redpanda: Kafka API, single node. Stands in for MSK or Kinesis.
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+    ports:
+      - "${KAFKA_PORT:-19092}:19092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # One-shot: create the topics with explicit partition counts.
+  #
+  # Auto-creation would work but would give every topic one partition, which caps
+  # the processor at one consumer no matter how many replicas are running.
+  # ---------------------------------------------------------------------------
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        rpk topic create telemetry.normalised -p ${TELEMETRY_PARTITIONS:-6} -r 1 --brokers redpanda:9092 || true
+        rpk topic create device.status        -p 3 -r 1 --brokers redpanda:9092 || true
+        rpk topic create telemetry.deadletter -p 3 -r 1 --brokers redpanda:9092 || true
+        rpk topic create alerts.fired         -p 3 -r 1 --brokers redpanda:9092 || true
+        rpk topic list --brokers redpanda:9092
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # TimescaleDB.
+  # ---------------------------------------------------------------------------
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-telemetry}
+      POSTGRES_USER: ${PG_USER:-telemetry}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-telemetry}
+      # Background jobs run the continuous aggregate refreshes, the compression
+      # policy and the retention policy. The default of 16 is far more than a
+      # single-node demo needs and each one holds a connection.
+      TIMESCALEDB_TELEMETRY: "off"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb
+      - -c
+      - timescaledb.max_background_workers=8
+      - -c
+      - max_worker_processes=16
+      - -c
+      - max_connections=100
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-telemetry} -d ${PG_DATABASE:-telemetry}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # One-shot: schema migrations.
+  # ---------------------------------------------------------------------------
+  migrate:
+    image: iot-telemetry/tools:local
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+    command: ["python /app/scripts/migrate.py --wait 90"]
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Ingest: MQTT to stream.
+  # ---------------------------------------------------------------------------
+  ingest:
+    build:
+      context: .
+      dockerfile: services/ingest/Dockerfile
+    image: iot-telemetry/ingest:local
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "8883"
+      MQTT_CA_CERT: /certs/ca/ca.crt
+      MQTT_TENANT: ${TENANT:-acme}
+      MQTT_VERIFY_HOSTNAME: "true"
+      OBS_METRICS_PORT: "9100"
+    volumes:
+      - certs:/certs:ro
+    ports:
+      - "${INGEST_METRICS_PORT:-9101}:9100"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Processing: stream to TimescaleDB, plus the live rollups.
+  # ---------------------------------------------------------------------------
+  processing:
+    build:
+      context: .
+      dockerfile: services/processing/Dockerfile
+    image: iot-telemetry/processing:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      OBS_METRICS_PORT: "9100"
+    ports:
+      - "${PROCESSING_METRICS_PORT:-9102}:9100"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Alerting: evaluates the rule catalogue against the live rollups.
+  # ---------------------------------------------------------------------------
+  alerting:
+    build:
+      context: .
+      dockerfile: services/alerting/Dockerfile
+    image: iot-telemetry/alerting:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      ALERT_RULES_PATH: /app/config/alert_rules.yaml
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      OBS_METRICS_PORT: "9100"
+    volumes:
+      - ./config/alert_rules.yaml:/app/config/alert_rules.yaml:ro
+    ports:
+      - "${ALERTING_METRICS_PORT:-9103}:9100"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Query API.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    image: iot-telemetry/api:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:5173}
+      API_KAFKA_GROUP_PREFIX: api-live
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Dashboard. Built assets served by nginx, which also proxies /api and /ws to
+  # the API container so the browser sees one origin and there is no CORS story.
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: iot-telemetry/web:local
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # The fleet. Last to start, because there is no point publishing into a stack
+  # that is not ready to receive.
+  # ---------------------------------------------------------------------------
+  simulator:
+    build:
+      context: .
+      dockerfile: edge/simulator/Dockerfile
+    image: iot-telemetry/simulator:local
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      ingest:
+        condition: service_started
+    environment:
+      <<: *app-env
+    volumes:
+      - certs:/certs:ro
+    command:
+      - python
+      - -m
+      - telemetry_simulator
+      - --host=mosquitto
+      - --certs-dir=/certs
+      - --devices=${DEVICE_COUNT:-10}
+      - --tenant=${TENANT:-acme}
+      - --seed=${SIM_SEED:-1}
+      - --fault-fraction=${FAULT_FRACTION:-0.2}
+      - --warm-start-hours=${WARM_START_HOURS:-72}
+    restart: unless-stopped
+
+volumes:
+  certs:
+  redpanda-data:
+  timescale-data:

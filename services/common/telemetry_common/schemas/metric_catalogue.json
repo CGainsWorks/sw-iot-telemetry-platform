@@ -1,0 +1,50 @@
+{
+  "$id": "https://schemas.cgainsworks.dev/iot-telemetry/metrics/catalogue.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Units and plausible ranges for every metric the fleet may report. Adding an entry is a catalogue change, not a schema version bump.",
+  "metrics": {
+    "battery_v": {
+      "description": "Battery terminal voltage",
+      "maximum": 5.0,
+      "minimum": 0.0,
+      "unit": "V"
+    },
+    "co2_ppm": {
+      "description": "Carbon dioxide concentration",
+      "maximum": 40000.0,
+      "minimum": 0.0,
+      "unit": "ppm"
+    },
+    "humidity_pct": {
+      "description": "Relative humidity",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "unit": "percent"
+    },
+    "pressure_hpa": {
+      "description": "Barometric pressure",
+      "maximum": 1100.0,
+      "minimum": 300.0,
+      "unit": "hPa"
+    },
+    "rssi_dbm": {
+      "description": "Wi-Fi received signal strength",
+      "maximum": 0.0,
+      "minimum": -120.0,
+      "unit": "dBm"
+    },
+    "temperature_c": {
+      "description": "Ambient air temperature",
+      "maximum": 125.0,
+      "minimum": -40.0,
+      "unit": "degC"
+    },
+    "vibration_rms_g": {
+      "description": "Broadband vibration, RMS",
+      "maximum": 16.0,
+      "minimum": 0.0,
+      "unit": "g"
+    }
+  },
+  "title": "metric_catalogue"
+}

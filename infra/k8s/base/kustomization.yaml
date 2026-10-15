@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: telemetry
+
+resources:
+  - namespace.yaml
+  - timescaledb.yaml
+  - services.yaml
+  - ingress.yaml
+
+# Both ConfigMaps are generated rather than written out as resources, so each
+# gets a content hash appended to its name. Kustomize rewrites every reference
+# to match, which means changing a value here produces a new ConfigMap name, a
+# new pod template and therefore a rolling restart. A hand-written ConfigMap is
+# updated in place and the running pods keep the old values indefinitely.
+configMapGenerator:
+  - name: telemetry-config
+    envs:
+      - telemetry.env
+
+  # The same rule catalogue the local stack and the test suite use. Referenced
+  # rather than copied, so there is one definition.
+  #
+  # Reading a file from outside this directory needs:
+  #   kustomize build --load-restrictor=LoadRestrictionsNone
+  # which is what `make k8s-render` passes. The alternative is a second copy of
+  # the catalogue inside this directory and a CI check that the two agree, which
+  # is a worse trade.
+  - name: alert-rules
+    files:
+      - alert_rules.yaml=../../../config/alert_rules.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: iot-telemetry-platform
+      app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: iot-telemetry/ingest
+    newTag: local
+  - name: iot-telemetry/processing
+    newTag: local
+  - name: iot-telemetry/api
+    newTag: local
+  - name: iot-telemetry/alerting
+    newTag: local
+  - name: iot-telemetry/web
+    newTag: local
+  - name: iot-telemetry/tools
+    newTag: local

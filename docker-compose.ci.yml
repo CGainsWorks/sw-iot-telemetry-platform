@@ -1,0 +1,80 @@
+# CI-only overlay, used as:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --wait
+#
+# Two jobs here.
+#
+# **Layer caching.** A GitHub runner starts with an empty Docker cache, so every
+# run rebuilds six images from scratch and spends most of its time on pip. These
+# cache_from/cache_to entries push the layers into the Actions cache, which turns
+# a four minute build into about forty seconds once warm. They live in an overlay
+# rather than in docker-compose.yml because `type=gha` needs the Actions cache
+# tokens that only exist inside a workflow, and a developer running
+# `docker compose up` on their own machine would get a warning and no benefit.
+#
+# **A smaller fleet.** Ten devices and a full fault spread is right for a demo.
+# For a test run it is six devices with every fault active from the start, which
+# reaches the interesting states sooner.
+
+services:
+  pki:
+    build:
+      cache_from: ["type=gha,scope=tools"]
+      cache_to: ["type=gha,scope=tools,mode=max"]
+
+  migrate:
+    build:
+      cache_from: ["type=gha,scope=tools"]
+
+  mosquitto:
+    build:
+      cache_from: ["type=gha,scope=mosquitto"]
+      cache_to: ["type=gha,scope=mosquitto,mode=max"]
+
+  ingest:
+    build:
+      cache_from: ["type=gha,scope=ingest"]
+      cache_to: ["type=gha,scope=ingest,mode=max"]
+
+  processing:
+    build:
+      cache_from: ["type=gha,scope=processing"]
+      cache_to: ["type=gha,scope=processing,mode=max"]
+
+  api:
+    build:
+      cache_from: ["type=gha,scope=api"]
+      cache_to: ["type=gha,scope=api,mode=max"]
+
+  alerting:
+    build:
+      cache_from: ["type=gha,scope=alerting"]
+      cache_to: ["type=gha,scope=alerting,mode=max"]
+
+  web:
+    build:
+      cache_from: ["type=gha,scope=web"]
+      cache_to: ["type=gha,scope=web,mode=max"]
+
+  simulator:
+    build:
+      cache_from: ["type=gha,scope=simulator"]
+      cache_to: ["type=gha,scope=simulator,mode=max"]
+    command:
+      - python
+      - -m
+      - telemetry_simulator
+      - --host=mosquitto
+      - --certs-dir=/certs
+      - --devices=6
+      - --seed=1
+      # Every fault, on every faulty device, from the start. The integration
+      # tests assert that spoofed payloads and unsupported schema versions are
+      # dead-lettered, and waiting for a random onset would make them flaky.
+      - --fault-fraction=0.5
+      - --faults=all
+      # Ages the simulated physics 30x so a battery curve and a bearing fault
+      # reach interesting values inside a short run. Message timestamps stay on
+      # the real clock, so ingest does not see them as clock skew.
+      - --time-scale=30
+      - --warm-start-hours=600

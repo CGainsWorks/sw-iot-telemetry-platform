@@ -1,0 +1,40 @@
+# GENERATED FILE. Do not edit by hand.
+# Regenerate with: python scripts/gen_broker_config.py
+#
+# Mosquitto is configured with use_identity_as_username, so %u below is the
+# common name of the client certificate presented during the TLS handshake.
+# A device therefore cannot publish under any identity but its own, which is the
+# same guarantee AWS IoT Core gives through ${iot:Connection.Thing.ThingName}
+# policy variables.
+#
+# Anonymous access is disabled in mosquitto.conf, so there is no unauthenticated
+# path into these topics.
+
+# --- Devices ------------------------------------------------------------
+# Pattern rules apply to every authenticated client and confine each one to
+# the topic space named after its own certificate.
+
+pattern write dt/acme/+/%u/telemetry
+pattern write dt/acme/+/%u/status
+pattern read cmd/acme/+/%u/req
+pattern write cmd/acme/+/%u/res
+
+# --- Platform services --------------------------------------------------
+# Fleet-wide grants, one block per service certificate.
+
+user ingest-bridge
+topic read dt/acme/+/+/telemetry
+topic read dt/acme/+/+/status
+topic read cmd/acme/+/+/res
+
+user command-dispatcher
+topic write cmd/acme/+/+/req
+topic read cmd/acme/+/+/res
+
+user bench
+topic write dt/acme/+/+/telemetry
+topic write dt/acme/+/+/status
+topic read dt/acme/+/+/telemetry
+
+user broker-health
+topic read $SYS/#

@@ -1,0 +1,397 @@
+# The platform's own workloads: migrations, ingest, processing, alerting, API
+# and the dashboard.
+#
+# Shape shared by all of them: non-root, read-only root filesystem, all
+# capabilities dropped, explicit resource requests, and probes that distinguish
+# "not ready" from "wedged".
+
+---
+# Migrations run to completion before anything that reads the schema starts. A
+# Job rather than an init container on each service, so the migration runs once
+# per deploy rather than once per replica racing the others.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: migrate
+  annotations:
+    # Helm-style hook semantics if this is ever wrapped in a chart. Under plain
+    # kustomize the ordering is the operator's job: apply this, wait, apply the
+    # rest.
+    "helm.sh/hook": pre-install,pre-upgrade
+spec:
+  backoffLimit: 3
+  # Clean up an hour after finishing so a namespace does not fill with the
+  # record of every deploy.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: iot-telemetry/tools:local
+          command: ["python", "/app/scripts/migrate.py", "--wait", "180"]
+          envFrom:
+            - configMapRef: { name: telemetry-config }
+            - secretRef: { name: telemetry-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processing
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: processing
+spec:
+  # Replicas are bounded by the partition count on the telemetry topic: a
+  # consumer group cannot use more consumers than there are partitions, so a
+  # fourth replica against three partitions would sit idle.
+  replicas: 3
+  selector:
+    matchLabels: { app.kubernetes.io/name: processing }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0 # a surging replica would trigger a rebalance for nothing
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: processing }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: processing
+          image: iot-telemetry/processing:local
+          envFrom:
+            - configMapRef: { name: telemetry-config }
+            - secretRef: { name: telemetry-secrets }
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 4
+      # Long enough for the consumer to finish its batch, commit, and flush the
+      # open rollup windows. Cutting it short loses the last minute of the live
+      # view on every deploy.
+      terminationGracePeriodSeconds: 60
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: ingest
+spec:
+  # One replica by design. On AWS the IoT Core topic rule does this job and this
+  # deployment is not applied at all; where it does run, a second replica would
+  # be a second MQTT subscriber receiving the same messages and writing them to
+  # the stream twice.
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ingest }
+  strategy:
+    type: Recreate # never two subscribers at once, not even briefly
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ingest }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ingest
+          image: iot-telemetry/ingest:local
+          envFrom:
+            - configMapRef: { name: telemetry-config }
+            - secretRef: { name: telemetry-secrets }
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 4
+      volumes:
+        - name: certs
+          secret:
+            secretName: ingest-client-certificate
+            defaultMode: 0400
+      terminationGracePeriodSeconds: 45
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alerting
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: alerting
+spec:
+  # One replica. Two would both evaluate every rule every cycle; the partial
+  # unique index on alerts means they would not create duplicate alerts, but
+  # they would double the query load for nothing.
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: alerting }
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: alerting }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        # No checksum annotation needed: the alert-rules ConfigMap is generated
+        # with a content hash in its name, so editing the catalogue changes the
+        # volume reference and rolls the pod on its own.
+    spec:
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: alerting
+          image: iot-telemetry/alerting:local
+          envFrom:
+            - configMapRef: { name: telemetry-config }
+            - secretRef: { name: telemetry-secrets }
+          env:
+            - name: ALERT_RULES_PATH
+              value: /etc/alerting/alert_rules.yaml
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/alerting
+              readOnly: true
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 4
+      volumes:
+        - name: rules
+          configMap:
+            name: alert-rules
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: telemetry-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across zones so losing one zone does not take the API
+      # with it.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: api }
+      containers:
+        - name: api
+          image: iot-telemetry/api:local
+          envFrom:
+            - configMapRef: { name: telemetry-config }
+            - secretRef: { name: telemetry-secrets }
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            # Checks the database, so a replica that cannot serve is taken out
+            # of the Service.
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # Deliberately does not check the database. A liveness probe that
+            # depends on a dependency restarts healthy processes during that
+            # dependency's outage and turns a blip into a crash loop.
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 4
+      # WebSocket clients are holding open connections. This is how long they
+      # get to notice the close and reconnect elsewhere.
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: telemetry
+  labels: { app.kubernetes.io/name: api }
+spec:
+  selector: { app.kubernetes.io/name: api }
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: web }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: web }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # nginx in the alpine image
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: iot-telemetry/web:local
+          ports:
+            - { name: http, containerPort: 80 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # nginx writes its pid and its temporary bodies. With a read-only
+            # root filesystem those need somewhere to go.
+            - { name: cache, mountPath: /var/cache/nginx }
+            - { name: run, mountPath: /var/run }
+          readinessProbe:
+            httpGet: { path: /index.html, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - { name: cache, emptyDir: {} }
+        - { name: run, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: telemetry
+  labels: { app.kubernetes.io/name: web }
+spec:
+  selector: { app.kubernetes.io/name: web }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+
+---
+# Keeps a voluntary disruption, a node drain during an upgrade, from taking the
+# API down entirely.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: telemetry
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: processing
+  namespace: telemetry
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: processing }

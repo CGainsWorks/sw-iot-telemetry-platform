@@ -1,0 +1,59 @@
+# Development overlay: one of everything, smaller volumes, debug logging.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: telemetry
+
+resources:
+  - ../../base
+
+patches:
+  # A dev cluster does not need three consumers or two of anything.
+  - target: { kind: Deployment, name: processing }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: Deployment, name: api }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: Deployment, name: web }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  # 200Gi of gp3 costs real money to leave running.
+  - target: { kind: StatefulSet, name: timescaledb }
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 1Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 2Gi
+
+  # A disruption budget of minAvailable 1 against a single replica blocks every
+  # node drain, which makes a dev cluster impossible to upgrade.
+  - target: { kind: PodDisruptionBudget, name: api }
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+  - target: { kind: PodDisruptionBudget, name: processing }
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+
+configMapGenerator:
+  - name: telemetry-config
+    behavior: merge
+    literals:
+      - OBS_LOG_LEVEL=DEBUG
+      - API_CORS_ORIGINS=http://localhost:5173

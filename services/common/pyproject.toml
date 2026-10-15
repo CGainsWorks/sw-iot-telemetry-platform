@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telemetry-common"
+version = "1.1.0"
+description = "Shared message schema, topic grammar and helpers for the IoT telemetry platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic==2.9.2",
+    "pydantic-settings==2.5.2",
+    "python-dateutil==2.9.0.post0",
+    "PyYAML==6.0.2",
+    "structlog==24.4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3", "jsonschema==4.23.0"]
+
+[tool.setuptools.packages.find]
+include = ["telemetry_common*"]
+
+[tool.setuptools.package-data]
+telemetry_common = ["schemas/**/*.json"]

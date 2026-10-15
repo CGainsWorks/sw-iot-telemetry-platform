@@ -1,0 +1,62 @@
+[
+  {
+    "name": "alert_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "rule_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "device_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "site_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "metric",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "severity",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "info, warning or critical."
+  },
+  {
+    "name": "value",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Observed value at the moment the alert opened."
+  },
+  {
+    "name": "threshold",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "fired_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Partitioning column."
+  },
+  {
+    "name": "resolved_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "Null while still firing. resolved_at minus fired_at is the duration used for reliability reporting."
+  },
+  {
+    "name": "notification_count",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "Notifications sent for this alert, including renotifications."
+  }
+]

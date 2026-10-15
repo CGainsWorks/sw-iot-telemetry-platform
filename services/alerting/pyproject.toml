@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telemetry-alerting"
+version = "1.0.0"
+description = "Alert rule engine and notification delivery"
+requires-python = ">=3.11"
+dependencies = [
+    "telemetry-common",
+    "asyncpg==0.29.0",
+    "aiokafka[lz4]==0.11.0",
+    "httpx==0.27.2",
+    "prometheus-client==0.21.0",
+    "PyYAML==6.0.2",
+]
+
+[project.scripts]
+telemetry-alerting = "alerting.main:main"
+
+[tool.setuptools.packages.find]
+include = ["alerting*"]

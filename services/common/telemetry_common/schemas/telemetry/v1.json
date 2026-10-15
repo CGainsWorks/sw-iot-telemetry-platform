@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "DeviceStatus": {
+      "description": "Self-reported health, decided on the device.",
+      "enum": [
+        "ok",
+        "degraded",
+        "fault"
+      ],
+      "title": "DeviceStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.cgainsworks.dev/iot-telemetry/telemetry/v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One batch of sensor readings from one device at one instant.",
+  "properties": {
+    "device_id": {
+      "description": "Lower-case device identity, matches the TLS certificate common name",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$",
+      "title": "Device Id",
+      "type": "string"
+    },
+    "fw_version": {
+      "description": "Firmware version running on the device",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Fw Version",
+      "type": "string"
+    },
+    "readings": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "description": "Metric name to value",
+      "minProperties": 1,
+      "title": "Readings",
+      "type": "object"
+    },
+    "schema_version": {
+      "default": "1.1.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Monotonic counter, resets to 0 on reboot",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "site_id": {
+      "description": "Physical site the device is installed at",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$",
+      "title": "Site Id",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/DeviceStatus",
+      "default": "ok"
+    },
+    "ts": {
+      "description": "Sample time on the device, UTC",
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "uptime_s": {
+      "description": "Seconds since last boot",
+      "minimum": 0,
+      "title": "Uptime S",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "device_id",
+    "site_id",
+    "seq",
+    "ts",
+    "fw_version",
+    "uptime_s",
+    "readings"
+  ],
+  "title": "telemetry",
+  "type": "object",
+  "x-schema-version": "1.1.0"
+}

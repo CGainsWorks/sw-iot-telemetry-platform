@@ -1,0 +1,24 @@
+# Development and CI tooling.
+#
+# A single pinned file so that `actions/setup-python` can cache against its hash
+# and CI installs the same versions every run. The services' own dependencies
+# live in each service's pyproject.toml; these are only the tools that check
+# them.
+#
+# Versions are pinned exactly, including the linter. An unpinned ruff fails
+# `format --check` on a tree that was clean the day before, because a new
+# release changed its mind about how to wrap something.
+ruff==0.7.1
+# Stubs, so the modules that use these libraries are genuinely checked rather
+# than silently falling back to Any.
+types-PyYAML==6.0.12.20240917
+mypy==1.12.1
+pytest==8.3.3
+pytest-asyncio==0.24.0
+httpx==0.27.2
+websockets==13.1
+psycopg[binary]==3.2.3
+
+# Analytics: DuckDB runs the BigQuery queries locally so the SQL is tested.
+duckdb==1.1.3
+pyarrow==17.0.0

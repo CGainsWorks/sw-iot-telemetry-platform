@@ -1,0 +1,120 @@
+# Tooling configuration for the whole repository.
+#
+# Not a package. Each service under services/ and edge/ has its own pyproject
+# and is installed separately, so a service image carries only its own
+# dependencies. This file holds the settings that have to agree across all of
+# them: lint rules, type checking and the test runner.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "integration: needs the Docker Compose stack running (deselect with -m 'not integration')",
+    "slow: takes more than a few seconds",
+]
+filterwarnings = [
+    "error",
+    # aiokafka still uses the loop argument internally on some paths.
+    "ignore::DeprecationWarning:aiokafka.*",
+    "ignore::DeprecationWarning:asyncio.*",
+]
+asyncio_mode = "auto"
+# Pinned explicitly rather than left to the default, which pytest-asyncio warns
+# about and intends to change.
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "web", "edge/firmware", "infra"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    # Assigning an exception to a variable before raising is often clearer than
+    # inlining a long message.
+    "B904",
+    # Line length is enforced by the formatter, not the linter, so that a long
+    # URL in a comment is not a build failure.
+    "E501",
+    # "Combine nested with statements". Declined: the inner context manager here
+    # is always derived from the outer one, as in acquiring a connection and then
+    # opening a transaction on it. Combining them onto one line hides that
+    # dependency to save a line.
+    "SIM117",
+    # "Return the negated condition directly". Declined where a function is a
+    # series of parallel early-return guards: rewriting the last one as a negated
+    # expression breaks the symmetry that makes the rest readable.
+    "SIM103",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on internals and use fixtures that shadow names.
+"tests/**" = ["N802", "N803", "S101"]
+# Re-exports.
+"**/__init__.py" = ["F401"]
+# B008 forbids a function call in an argument default. Declaring query
+# parameters as `x: int = Query(default=...)` is the documented FastAPI idiom and
+# is how the validation metadata reaches the OpenAPI document, so the rule is
+# simply wrong here.
+"services/api/api/routes.py" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "telemetry_common",
+    "telemetry_simulator",
+    "ingest",
+    "processing",
+    "api",
+    "alerting",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+# Not strict everywhere. The service code is checked; the tests are not, because
+# making a test suite fully typed costs more than it catches.
+files = [
+    "services/common/telemetry_common",
+    "services/ingest/ingest",
+    "services/processing/processing",
+    "services/api/api",
+    "services/alerting/alerting",
+    "edge/simulator/telemetry_simulator",
+    "scripts",
+    "bench",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "aiomqtt.*",
+    "aiokafka.*",
+    "asyncpg.*",
+    "psycopg.*",
+    "prometheus_client.*",
+    "structlog.*",
+    "boto3.*",
+    "duckdb.*",
+    "matplotlib.*",
+]
+ignore_missing_imports = true

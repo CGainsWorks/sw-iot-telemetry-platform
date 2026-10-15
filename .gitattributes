@@ -1,0 +1,27 @@
+# Normalise line endings. Text files are LF in the repository.
+* text=auto eol=lf
+
+# Shell scripts must stay LF or they break inside Linux containers.
+*.sh    text eol=lf
+*.bash  text eol=lf
+Makefile text eol=lf
+
+# Windows-only helpers keep CRLF.
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Explicit binaries.
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+
+# Git LFS rules for large artefacts. None are committed today; these rules exist so
+# that adding a capture or a model later does not put it into the Git history.
+*.bag       filter=lfs diff=lfs merge=lfs -text
+*.mcap      filter=lfs diff=lfs merge=lfs -text
+*.parquet   filter=lfs diff=lfs merge=lfs -text
+*.onnx      filter=lfs diff=lfs merge=lfs -text
+*.pt        filter=lfs diff=lfs merge=lfs -text
+*.mp4       filter=lfs diff=lfs merge=lfs -text

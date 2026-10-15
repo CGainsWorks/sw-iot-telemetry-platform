@@ -1,0 +1,44 @@
+# Public entry point.
+#
+# One host for both the dashboard and the API. The dashboard fetches /api from
+# the same origin it was loaded from, so there is no CORS preflight and no
+# second hostname to keep in step.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: telemetry
+  namespace: telemetry
+  annotations:
+    # cert-manager issues and renews the certificate.
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # The live feed is idle whenever the fleet is quiet. Without a long read
+    # timeout the ingress closes the WebSocket during any lull and every
+    # dashboard reconnects on a loop.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Buffering a stream defeats the point of streaming it.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [telemetry.example.com]
+      secretName: telemetry-tls
+  rules:
+    - host: telemetry.example.com
+      http:
+        paths:
+          # Most specific first: the ingress controller matches by prefix
+          # length, but keeping the order readable avoids the question.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port: { number: 8000 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port: { number: 80 }

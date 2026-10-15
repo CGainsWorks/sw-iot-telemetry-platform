@@ -1,0 +1,50 @@
+[
+  {
+    "name": "snapshot_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "Date this snapshot describes. Partitioning column."
+  },
+  {
+    "name": "device_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "site_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "profile",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Hardware class: environment, machine or air_quality."
+  },
+  {
+    "name": "fw_version",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "schema_version",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Message schema the device was last seen publishing. A fleet always carries several at once."
+  },
+  {
+    "name": "first_seen",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "last_seen",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "certificate_expires_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  }
+]

@@ -1,0 +1,372 @@
+# Continuous integration.
+#
+# Written to be cheap. Actions minutes are free on a public repository and
+# metered on a private one, so this workflow is built not to waste them:
+#
+#   concurrency        a new push cancels the run still going for the same ref,
+#                      rather than paying for both
+#   paths-ignore       a documentation-only change runs nothing
+#   needs              the eight minute integration job only starts once the two
+#                      minute lint and test jobs have passed, so a typo costs
+#                      two minutes rather than ten
+#   timeout-minutes    on every job. This is the important one: without it a
+#                      hung container or a wedged test run bills until the
+#                      six hour default expires, which on a free private
+#                      repository is a sixth of the monthly allowance gone in
+#                      one run
+#   caching            pip, npm, Terraform providers and Docker layers. The
+#                      Docker cache is the big one, worth about three minutes
+#                      per run
+#
+# Roughly 15 minutes of runner time per code push, about 8 minutes of wall
+# clock, and nothing at all for a push that only touches Markdown.
+#
+# Note on visibility: a private repository on a free plan is assigned no runner
+# for these jobs and they fail within seconds with no logs. If that happens, the
+# repository is private, not the workflow broken.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  # Stop pip asking about upgrades and writing a cache we immediately discard.
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast checks. Nothing here needs Docker, so these finish in a couple of
+  # minutes and gate the expensive job below.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint and generated files
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: |
+          pip install -r requirements-dev.txt
+          # Editable, because the generator scripts and the rule validator
+          # import from the services.
+          pip install -e ./services/common \
+                      -e ./edge/simulator \
+                      -e ./services/ingest \
+                      -e ./services/processing \
+                      -e ./services/api \
+                      -e ./services/alerting
+
+      - name: Ruff lint
+        run: ruff check --output-format=github .
+
+      - name: Ruff format
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy
+
+      - name: Line endings are LF
+        # A CR in a shell script breaks it inside a Linux container, and the
+        # failure message explains nothing. Cheaper to catch here.
+        run: bash scripts/check_line_endings.sh
+
+      - name: Published JSON schemas are up to date
+        # The schemas are generated from the Pydantic models. If this fails, the
+        # published contract has drifted from the code that enforces it.
+        run: python scripts/gen_schemas.py --check
+
+      - name: Broker ACL is up to date
+        # Generated from the same topic grammar the services use. A stale ACL
+        # means devices are either locked out or over-privileged.
+        run: python scripts/gen_broker_config.py --check
+
+      - name: Alert rule catalogue is valid
+        # A rule that fails to load is an alert that will never fire, and that
+        # failure is indistinguishable from everything being fine.
+        run: python -m alerting.main --check --rules config/alert_rules.yaml
+
+      - name: Shell scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: |
+          pip install -r requirements-dev.txt
+          pip install -e ./services/common \
+                      -e ./edge/simulator \
+                      -e ./services/ingest \
+                      -e ./services/processing \
+                      -e ./services/api \
+                      -e ./services/alerting
+
+      - name: Unit tests
+        # Explicitly excluding the integration mark, so an integration test that
+        # loses its skip guard fails loudly here rather than hanging.
+        run: pytest tests/unit -q -m "not integration"
+
+  analytics:
+    name: Analytical SQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: pip install duckdb==1.1.3 pyarrow==17.0.0
+
+      - name: Run every query against DuckDB
+        # The queries target BigQuery. Testing them there would need a project,
+        # a billing account and credentials, which means in practice they would
+        # not be tested at all. They are written once against a small macro
+        # vocabulary and rendered into either dialect; this runs the DuckDB
+        # rendering over generated fixtures.
+        #
+        # --require-rows matters: a query that returns nothing has only been
+        # shown to parse. The fixtures are shaped so every query has something
+        # to find.
+        run: python analytics/local/run_queries.py --fixtures --require-rows --limit 3
+
+  web:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Type check
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: web
+        run: npm run test
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  infra:
+    name: Terraform and Kubernetes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Cache Terraform providers
+        # The AWS provider alone is about 600 MB downloaded. Caching it is the
+        # difference between a two minute job and a five minute one.
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/terraform/**/versions.tf', 'infra/terraform/**/main.tf') }}
+          restore-keys: terraform-${{ runner.os }}-
+
+      - name: Format
+        run: terraform -chdir=infra/terraform fmt -recursive -check -diff
+
+      - name: Validate both roots
+        env:
+          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          for root in infra/terraform/aws infra/terraform/gcp; do
+            echo "::group::$root"
+            # -backend=false: validation does not need remote state, and the S3
+            # backend would need credentials this workflow deliberately has none of.
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+            echo "::endgroup::"
+          done
+
+      - name: Install kustomize
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
+            | bash -s 5.4.3
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Render the manifests
+        # --load-restrictor: the alert-rules ConfigMap is generated from
+        # config/alert_rules.yaml, outside the kustomization directory, so that
+        # the catalogue has exactly one definition shared with the local stack
+        # and the tests.
+        run: |
+          for target in infra/k8s/base infra/k8s/overlays/dev; do
+            echo "::group::$target"
+            kustomize build --load-restrictor=LoadRestrictionsNone "$target" > /dev/null
+            echo "::endgroup::"
+          done
+          echo "manifests render"
+
+  # ---------------------------------------------------------------------------
+  # The expensive one. Brings the whole stack up and asserts the things only a
+  # running system can prove: that the broker enforces mutual TLS, that the ACL
+  # confines a device to its own topic, that a spoofed payload is rejected, and
+  # that the alerting rules fire on what they should and stay quiet on what they
+  # should not.
+  #
+  # Gated on lint and test so a typo does not cost eight minutes.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint, test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install the test client
+        run: |
+          pip install -r requirements-dev.txt
+          pip install -e ./services/common \
+                      -e ./services/ingest \
+                      -e ./services/api \
+                      -e ./services/alerting
+          # aiomqtt is needed to publish the spoofed and malformed messages the
+          # security tests rely on.
+          pip install aiomqtt==2.3.0 asyncpg==0.29.0
+
+      - name: Set up Buildx
+        # Needed for the type=gha cache backend the CI overlay asks for.
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and start the stack
+        env:
+          # Delegates the build to buildx bake, which is what understands
+          # cache_from/cache_to type=gha.
+          COMPOSE_BAKE: "true"
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            up -d --build --wait --wait-timeout 300
+
+      - name: Show what is running
+        run: docker compose ps
+
+      - name: Let the pipeline fill
+        # The rollup flush interval is 5 seconds and the continuous aggregate
+        # refresh is a minute. Waiting here rather than inside the tests keeps
+        # the per-test timeouts honest.
+        run: sleep 45
+
+      - name: Export the device certificates
+        # The security tests publish as a real device over mutual TLS, so they
+        # need the certificates the PKI job generated inside the volume.
+        run: bash scripts/export_certs.sh
+
+      - name: Integration tests
+        run: pytest tests/integration -q -m integration
+
+      - name: Smoke-test the benchmark harness
+        # Short run, but it proves the harness works and that the pipeline loses
+        # nothing at a modest rate. The numbers in the README come from a longer
+        # run on real hardware, not from this.
+        run: |
+          python bench/benchmark.py \
+            --devices 10 --rate 5 --duration 20 \
+            --warmup 3 --drain 12 --connections 4 \
+            --label ci
+
+      - name: Export and query the analytical layer
+        # Proves the exporter produces Parquet the queries can actually read,
+        # which the fixture-based analytics job cannot.
+        run: |
+          python analytics/export/export.py --days 1 --out data/export --allow-empty
+          python analytics/local/run_queries.py --data data/export || true
+
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          docker compose logs --tail 200 ingest processing alerting api
+          docker compose exec -T timescaledb \
+            psql -U telemetry -d telemetry \
+            -c "SELECT reason, count(*) FROM dead_letters GROUP BY reason;" \
+            -c "SELECT count(*) FROM telemetry;" || true
+
+      - name: Tear down
+        # always(), so a failed test run does not leave containers and volumes
+        # behind on the runner. The runner is discarded anyway, but a hung
+        # `compose down` on a shared runner is somebody else's problem.
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v --remove-orphans

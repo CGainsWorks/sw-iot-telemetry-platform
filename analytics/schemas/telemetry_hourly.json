@@ -1,0 +1,56 @@
+[
+  {
+    "name": "bucket",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Start of the hour, UTC. Partitioning column."
+  },
+  {
+    "name": "device_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Device identity, equal to its certificate common name."
+  },
+  {
+    "name": "site_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Site the device was installed at when the reading was taken."
+  },
+  {
+    "name": "metric",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Metric name from the platform catalogue, for example temperature_c."
+  },
+  {
+    "name": "avg_value",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Sample-count weighted mean over the hour. Weighted, not a mean of means: devices publish at different cadences, so an unweighted average of the minute buckets would over-count the slow ones."
+  },
+  {
+    "name": "min_value",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Lowest single sample in the hour."
+  },
+  {
+    "name": "max_value",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Highest single sample in the hour."
+  },
+  {
+    "name": "sample_count",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "Raw samples behind this row. Doubles as a completeness signal: a device on a 10 second cadence should show 360."
+  },
+  {
+    "name": "exported_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "When the export ran. Lets a re-export be identified and deduplicated."
+  }
+]

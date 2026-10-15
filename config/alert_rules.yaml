@@ -1,0 +1,236 @@
+# Alert rule catalogue.
+#
+# Loaded and validated at startup by the alerting service, and synchronised into
+# the alert_rules table so the query API can join an alert to the rule that
+# produced it. A rule that fails to parse stops the service starting: an alert
+# that silently never fires is worse than no alert at all.
+#
+# Fields
+#   id          stable identifier, appears in every alert this rule raises
+#   kind        threshold | flatline | rate_of_change | offline |
+#               dead_letter_rate | certificate_expiry
+#   metric      which metric to read, for the kinds that read one
+#   aggregation avg | min | max | last, which column of the minute rollup to use
+#   window      how far back the rule looks
+#   for         how long the condition must hold before firing
+#   recovery    how long it must stop holding before resolving
+#   renotify    minimum gap between repeat notifications while still firing
+#   scope       site_id / device_id / profile, "*" or omitted means all
+#   channels    log, webhook
+#
+# `for` and `recovery` are the two fields that matter most. Without `for`, one
+# noisy sample pages someone. Without `recovery`, a value sitting on the
+# threshold produces an endless fire-and-resolve cycle.
+
+rules:
+  # -------------------------------------------------------------------------
+  # Environmental
+  # -------------------------------------------------------------------------
+  - id: high-temperature
+    name: High temperature
+    kind: threshold
+    severity: warning
+    metric: temperature_c
+    aggregation: avg
+    operator: ">"
+    threshold: 35.0
+    window: 5m
+    for: 2m
+    recovery: 5m
+    channels: [log, webhook]
+    description: >
+      Mean temperature above 35 degC sustained for two minutes. Averaged rather
+      than instantaneous so a single sun-struck sample does not fire it.
+
+  - id: critical-temperature
+    name: Critical temperature
+    kind: threshold
+    severity: critical
+    metric: temperature_c
+    aggregation: max
+    operator: ">"
+    threshold: 55.0
+    window: 5m
+    for: 1m
+    recovery: 5m
+    renotify: 15m
+    channels: [log, webhook]
+    description: >
+      Any sample above 55 degC. Uses max and a shorter hold than the warning
+      because at this level a brief excursion still matters.
+
+  - id: humidity-out-of-band
+    name: Humidity outside comfort band
+    kind: threshold
+    severity: info
+    metric: humidity_pct
+    aggregation: avg
+    operator: ">"
+    threshold: 75.0
+    window: 15m
+    for: 10m
+    recovery: 15m
+    channels: [log]
+    description: Sustained high humidity, which is a condensation risk.
+
+  - id: co2-poor-air
+    name: Poor air quality
+    kind: threshold
+    severity: warning
+    metric: co2_ppm
+    aggregation: avg
+    operator: ">"
+    threshold: 1400.0
+    window: 10m
+    for: 5m
+    recovery: 10m
+    channels: [log]
+    description: CO2 above 1400 ppm, the point where occupants start reporting stuffiness.
+
+  # -------------------------------------------------------------------------
+  # Device health
+  # -------------------------------------------------------------------------
+  - id: low-battery
+    name: Low battery
+    kind: threshold
+    severity: warning
+    metric: battery_v
+    aggregation: avg
+    operator: "<"
+    threshold: 3.55
+    window: 30m
+    for: 15m
+    recovery: 1h
+    renotify: 12h
+    channels: [log, webhook]
+    description: >
+      Below the discharge-curve knee, so the device has days rather than weeks
+      left. A long hold and a long renotify because this is a maintenance
+      ticket, not an incident.
+
+  - id: critical-battery
+    name: Critical battery
+    kind: threshold
+    severity: critical
+    metric: battery_v
+    aggregation: avg
+    operator: "<"
+    threshold: 3.40
+    window: 30m
+    for: 10m
+    recovery: 1h
+    renotify: 6h
+    channels: [log, webhook]
+    description: About to drop off the network.
+
+  - id: weak-signal
+    name: Weak Wi-Fi signal
+    kind: threshold
+    severity: info
+    metric: rssi_dbm
+    aggregation: avg
+    operator: "<"
+    threshold: -85.0
+    window: 15m
+    for: 10m
+    recovery: 15m
+    channels: [log]
+    description: >
+      Sustained weak signal. The long hold is deliberate: deep fades of a few
+      seconds are normal and alerting on them would be pure noise.
+
+  - id: device-offline
+    name: Device offline
+    kind: offline
+    severity: warning
+    threshold: 600
+    window: 1h
+    recovery: 2m
+    channels: [log, webhook]
+    description: >
+      No telemetry for ten minutes. Ten minutes rather than one because the
+      slowest profile publishes every thirty seconds and a couple of missed
+      publishes is a flaky link, not a dead device.
+
+  - id: sensor-flatline
+    name: Sensor flatline
+    kind: flatline
+    severity: warning
+    metric: temperature_c
+    threshold: 0.05
+    window: 20m
+    for: 20m
+    recovery: 10m
+    channels: [log, webhook]
+    description: >
+      Temperature has not moved by more than 0.05 degC in twenty minutes. A real
+      sensor always shows some noise, so a perfectly flat reading means the
+      sensor is stuck, not that the room is stable. Nothing else catches this:
+      the value stays entirely plausible.
+
+  - id: vibration-trend
+    name: Rising vibration floor
+    kind: rate_of_change
+    severity: warning
+    metric: vibration_rms_g
+    aggregation: min
+    operator: ">"
+    threshold: 0.0005
+    window: 45m
+    recovery: 45m
+    channels: [log, webhook]
+    description: >
+      The idle floor of the vibration signal rising by more than 0.0005 g per
+      minute, measured between the two halves of the window. Deliberately on min
+      rather than avg: these machines are duty cycled, so the mean jumps from
+      about 0.012 g to about 0.32 g every time the motor starts, and a slope
+      taken on the mean fires on every start. The floor is the discriminating
+      signal, because duty cycling moves between two fixed levels and leaves it
+      alone while a developing bearing fault lifts the whole signal including
+      the floor. The window spans more than one duty cycle so that each half
+      contains an idle period to take a floor from.
+
+  - id: high-vibration
+    name: High vibration
+    kind: threshold
+    severity: critical
+    metric: vibration_rms_g
+    aggregation: avg
+    operator: ">"
+    threshold: 2.0
+    window: 10m
+    for: 5m
+    recovery: 10m
+    channels: [log, webhook]
+    description: Absolute vibration limit, the backstop behind the trend rule.
+
+  # -------------------------------------------------------------------------
+  # Platform health
+  # -------------------------------------------------------------------------
+  - id: dead-letter-spike
+    name: Rejected message spike
+    kind: dead_letter_rate
+    severity: warning
+    operator: ">"
+    threshold: 50
+    window: 15m
+    recovery: 15m
+    channels: [log, webhook]
+    description: >
+      More than fifty rejected messages in fifteen minutes. Usually a firmware
+      rollout publishing a schema the platform does not support, which is
+      invisible from device-level rules because the devices look healthy.
+
+  - id: certificate-expiring
+    name: Device certificate expiring
+    kind: certificate_expiry
+    severity: warning
+    threshold: 30
+    window: 1h
+    recovery: 1h
+    renotify: 24h
+    channels: [log, webhook]
+    description: >
+      Certificate expires within thirty days. Thirty because rotation needs the
+      device to be awake and reachable, and a battery node on a long duty cycle
+      can take weeks to catch an update. See docs/provisioning.md.

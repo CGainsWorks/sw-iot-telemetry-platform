@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telemetry-ingest"
+version = "1.0.0"
+description = "MQTT to stream bridge with certificate-bound device identity"
+requires-python = ">=3.11"
+dependencies = [
+    "telemetry-common",
+    "aiomqtt==2.3.0",
+    # The lz4 extra, not a bare lz4 pin: aiokafka 0.11 routes every codec
+    # through cramjam, and installing lz4 on its own leaves the producer
+    # unable to find a compressor at runtime.
+    "aiokafka[lz4]==0.11.0",
+    "prometheus-client==0.21.0",
+]
+
+[project.optional-dependencies]
+aws = ["boto3==1.35.36"]
+
+[project.scripts]
+telemetry-ingest = "ingest.main:main"
+
+[tool.setuptools.packages.find]
+include = ["ingest*"]
