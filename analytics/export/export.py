@@ -85,6 +85,71 @@ EXPORTS: dict[str, str] = {
 UNBOUNDED = {"device_dim"}
 
 
+SCHEMA_DIR = REPO_ROOT / "analytics" / "schemas"
+
+
+def _arrow_schema(table: str, columns: list[str]):
+    """Build the Arrow schema for a table from its published JSON schema.
+
+    Column order follows the cursor, not the file, so a reordered SELECT is a
+    loud failure here rather than a silently transposed load later.
+    """
+    import json
+
+    import pyarrow as pa
+
+    bigquery_to_arrow = {
+        # Microsecond precision with a timezone: PostgreSQL stores timestamptz
+        # at microsecond resolution and BigQuery TIMESTAMP is UTC, so this is
+        # lossless in both directions. Nanoseconds would be a wider type for no
+        # extra information.
+        "TIMESTAMP": pa.timestamp("us", tz="UTC"),
+        "DATE": pa.date32(),
+        "STRING": pa.string(),
+        "FLOAT": pa.float64(),
+        "INTEGER": pa.int64(),
+        "BOOLEAN": pa.bool_(),
+    }
+
+    declared = {
+        column["name"]: column
+        for column in json.loads((SCHEMA_DIR / f"{table}.json").read_text(encoding="utf-8"))
+    }
+
+    missing = set(columns) - set(declared)
+    if missing:
+        raise RuntimeError(
+            f"{table}: the query selects {sorted(missing)}, which "
+            f"analytics/schemas/{table}.json does not declare. Update the schema."
+        )
+
+    return pa.schema(
+        [
+            pa.field(
+                name,
+                bigquery_to_arrow[declared[name]["type"]],
+                nullable=declared[name].get("mode", "NULLABLE") != "REQUIRED",
+            )
+            for name in columns
+        ]
+    )
+
+
+def _display(path: Path) -> str:
+    """A short path for logging, without assuming where the output lives.
+
+    ``Path.relative_to`` raises when the path is not under the other one, and a
+    relative ``--out`` such as ``data/export`` is not under the absolute
+    repository root at all. Printing a progress message is not worth failing an
+    export over, which is exactly what the first version of this did.
+    """
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -159,13 +224,26 @@ def export(dsn: str, days: int, out: Path, tables: list[str] | None, allow_empty
 
             # Column-major, because that is what Arrow wants and what Parquet
             # stores. Transposing here avoids Arrow inferring a type per row.
-            table = pa.table({column: [row[i] for row in rows] for i, column in enumerate(columns)})
+            data = {column: [row[i] for row in rows] for i, column in enumerate(columns)}
+
+            # The schema is declared, not inferred. Arrow infers the type of an
+            # all-NULL column as `null`, which writes a Parquet column whose
+            # type disagrees with the BigQuery table it is about to be loaded
+            # into. That is exactly what happened here:
+            # devices.certificate_expires_at was null for every row, the column
+            # came out as `null`, and a query doing date arithmetic on it failed
+            # with a type error that pointed nowhere near the cause.
+            #
+            # Reading the schema from analytics/schemas means the Parquet, the
+            # Terraform table definition and the loader all agree by
+            # construction.
+            table = pa.table(data, schema=_arrow_schema(name, columns))
 
             # snappy rather than the gzip the archive uses: this file is read
             # once by a load job, so decompression speed beats size.
             path = out / f"{name}.parquet"
             pq.write_table(table, path, compression="snappy")
-            print(f"{name}: {len(rows):,} rows -> {path.relative_to(REPO_ROOT).as_posix()}")
+            print(f"{name}: {len(rows):,} rows -> {_display(path)}")
 
     if empty and not allow_empty:
         print(

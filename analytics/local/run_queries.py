@@ -31,19 +31,72 @@ from dialect import Dialect, load, query_names, render  # noqa: E402
 TABLES = ("telemetry_hourly", "device_dim", "alert_history")
 
 
-def register_parquet(connection, data_dir: Path) -> list[str]:
-    """Expose each Parquet file as a view named after its table."""
-    registered: list[str] = []
+# BigQuery type names, as they appear in analytics/schemas/*.json, mapped to the
+# DuckDB equivalents. Used only to build an empty stand-in view.
+_DUCKDB_TYPES = {
+    "TIMESTAMP": "TIMESTAMPTZ",
+    "DATE": "DATE",
+    "STRING": "VARCHAR",
+    "FLOAT": "DOUBLE",
+    "INTEGER": "BIGINT",
+    "BOOLEAN": "BOOLEAN",
+}
+
+SCHEMA_DIR = REPO_ROOT / "analytics" / "schemas"
+
+
+def _empty_view_sql(table: str) -> str:
+    """A typed, empty view built from the table's published JSON schema.
+
+    Needed because a short-lived stack has no hourly rollup yet: the continuous
+    aggregate needs an hour of data and a refresh cycle, so the exporter writes
+    no telemetry_hourly.parquet and every query referencing it would fail.
+
+    Creating an empty view with the correct column names and types instead means
+    the queries still run and return zero rows, which proves the SQL parses and
+    binds against the real exported schema. That is worth having, and it is the
+    difference between a CI step that checks something and one that ends in
+    `|| true`.
+
+    The schema JSON is the same file the Terraform reads, so a column added
+    there appears here without a second definition.
+    """
+    import json
+
+    columns = json.loads((SCHEMA_DIR / f"{table}.json").read_text(encoding="utf-8"))
+    casts = ", ".join(
+        f"CAST(NULL AS {_DUCKDB_TYPES.get(column['type'], 'VARCHAR')}) AS {column['name']}"
+        for column in columns
+    )
+    return f"CREATE OR REPLACE VIEW {table} AS SELECT {casts} WHERE FALSE"
+
+
+def register_parquet(connection, data_dir: Path) -> tuple[list[str], list[str]]:
+    """Expose each table as a view: the Parquet if present, an empty one if not.
+
+    Returns (tables backed by data, tables standing in empty).
+    """
+    with_data: list[str] = []
+    empty: list[str] = []
+
     for table in TABLES:
         path = data_dir / f"{table}.parquet"
-        if not path.exists():
-            continue
-        connection.execute(
-            f"CREATE OR REPLACE VIEW {table} AS SELECT * FROM read_parquet(?)",
-            [str(path)],
-        )
-        registered.append(table)
-    return registered
+        if path.exists():
+            # The path is interpolated rather than bound as a parameter. DuckDB
+            # rejects a prepared parameter inside CREATE VIEW outright, with
+            # "Unexpected prepared parameter". The value is a local command line
+            # argument, not untrusted input, and the quote doubling below covers
+            # a directory name containing an apostrophe.
+            literal = str(path.resolve()).replace("'", "''")
+            connection.execute(
+                f"CREATE OR REPLACE VIEW {table} AS " f"SELECT * FROM read_parquet('{literal}')"
+            )
+            with_data.append(table)
+        else:
+            connection.execute(_empty_view_sql(table))
+            empty.append(table)
+
+    return with_data, empty
 
 
 def build_fixtures(connection, *, seed: int = 7) -> None:
@@ -229,8 +282,8 @@ def main(argv: list[str] | None = None) -> int:
         build_fixtures(connection)
         print("using generated fixtures\n")
     else:
-        registered = register_parquet(connection, args.data)
-        if not registered:
+        with_data, empty = register_parquet(connection, args.data)
+        if not with_data:
             print(
                 f"no Parquet files found in {args.data}\n"
                 "Export first:  python analytics/export/export.py --days 7\n"
@@ -238,7 +291,13 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        print(f"reading {args.data}: {', '.join(registered)}\n")
+        print(f"reading {args.data}: {', '.join(with_data)}")
+        if empty:
+            # Named explicitly rather than passed over in silence: a query
+            # returning zero rows because its table was absent looks identical
+            # to one returning zero rows because nothing matched.
+            print(f"standing in empty (not exported): {', '.join(empty)}")
+        print()
 
     names = [args.query] if args.query else query_names()
     failures: list[str] = []

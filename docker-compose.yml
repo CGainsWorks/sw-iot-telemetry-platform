@@ -177,6 +177,35 @@ services:
     restart: "no"
 
   # ---------------------------------------------------------------------------
+  # One-shot: record the issued certificates in the device registry.
+  #
+  # The link between provisioning and the platform. Without it
+  # devices.certificate_expires_at stays null, which means the
+  # certificate-expiring alert rule has nothing to evaluate and therefore can
+  # never fire. A rule that cannot fire looks like reassurance, which is worse
+  # than no rule at all.
+  #
+  # Needs both the certificate volume and the migrated schema, hence depending
+  # on pki and migrate rather than on one of them.
+  # ---------------------------------------------------------------------------
+  certs-register:
+    image: iot-telemetry/tools:local
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    depends_on:
+      pki:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+    volumes:
+      - certs:/certs:ro
+    command: ["python /app/scripts/register_certificates.py --certs-dir /certs"]
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
   # Ingest: MQTT to stream.
   # ---------------------------------------------------------------------------
   ingest:

@@ -94,6 +94,10 @@ venv: ## Create the local virtualenv and install everything editable
 certs: ## Copy the device certificates out of the Compose volume to ./certs
 	bash scripts/export_certs.sh
 
+.PHONY: certs-register
+certs-register: ## Record the issued certificates in the device registry
+	$(VENV_PY) scripts/register_certificates.py --certs-dir certs
+
 .PHONY: generate
 generate: ## Regenerate the JSON schemas and the broker ACL from the code
 	$(VENV_PY) scripts/gen_schemas.py

@@ -349,11 +349,27 @@ jobs:
             --label ci
 
       - name: Export and query the analytical layer
-        # Proves the exporter produces Parquet the queries can actually read,
-        # which the fixture-based analytics job cannot.
+        # Proves the exporter produces Parquet whose schema the queries can
+        # actually bind against, which the fixture-based analytics job cannot:
+        # the fixtures are built by hand and agreed with themselves.
+        #
+        # This step is why two real bugs were found. The exporter inferred the
+        # Arrow type of an all-null column as `null`, writing a Parquet column
+        # whose type disagreed with the BigQuery table it was destined for; and
+        # the column was all-null because nothing recorded issued certificates
+        # in the registry, which meant the certificate-expiring alert rule could
+        # never fire.
+        #
+        # --allow-empty on the export, because a stack that has been up for two
+        # minutes has no hourly rollup yet: the continuous aggregate needs an
+        # hour of data and a refresh. The query runner stands in a typed empty
+        # view for anything not exported, so the queries still bind and run.
+        #
+        # Deliberately no `|| true`. An earlier version had one, and it would
+        # have hidden the second of those bugs completely.
         run: |
           python analytics/export/export.py --days 1 --out data/export --allow-empty
-          python analytics/local/run_queries.py --data data/export || true
+          python analytics/local/run_queries.py --data data/export
 
       - name: Service logs on failure
         if: failure()
