@@ -42,6 +42,10 @@ certs/
 .env.*
 !.env.example
 
+# Downloaded CI logs, pulled while debugging a workflow run.
+ci-job.log
+*-job.log
+
 # Local data and results
 data/
 *.parquet
