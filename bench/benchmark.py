@@ -471,7 +471,10 @@ async def run_benchmark(config: BenchConfig) -> BenchResult:
             label=config.label,
             started_at=window_start.isoformat(),
             config={
-                **{k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
+                **{
+                    k: (portable_path(v) if isinstance(v, Path) else v)
+                    for k, v in asdict(config).items()
+                },
                 "connections_used": connections,
             },
             duration_s=round(measured_s, 2),
@@ -574,6 +577,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where to write the JSON result. Defaults to bench/results/<label>.json",
     )
     return parser
+
+
+def portable_path(path: Path) -> str:
+    """A path fit for a result file that may be committed or shared.
+
+    Repository-relative and POSIX when the path is inside the repository, so a
+    result never carries the account name and drive layout of the machine that
+    produced it. Anything outside is reduced to its final component.
+    """
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.name
 
 
 def main(argv: list[str] | None = None) -> int:

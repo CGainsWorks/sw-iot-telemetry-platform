@@ -8,7 +8,12 @@ make demo
 make bench BENCH_DEVICES=50 BENCH_RATE=10 BENCH_DURATION=60
 ```
 
-Results are written to `bench/results/` as JSON and Markdown.
+Results are written to `bench/results/` as JSON and Markdown, which is
+gitignored. The three runs below are condensed into the committed
+[`bench/summary.json`](../bench/summary.json) by `bench/summarise.py` and a unit
+test checks that the figures quoted here and in the README match it. The run
+labels begin `laptop-` for historical reasons; the machine is the desktop
+described below.
 
 ## The machine
 

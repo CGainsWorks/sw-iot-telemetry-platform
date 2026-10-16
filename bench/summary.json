@@ -1,0 +1,135 @@
+{
+  "description": "Condensed from bench/results/<label>.json, written by bench/benchmark.py against the full Compose stack. Regenerate with bench/summarise.py.",
+  "machine": "AMD Ryzen 7 5700X (8 cores, 16 threads), 48 GB RAM, Samsung 970 EVO Plus NVMe; Windows 11 Pro, Docker Desktop with the WSL2 backend; load generator and the whole stack on the same machine",
+  "runs": [
+    {
+      "label": "laptop-50dev-10hz",
+      "config": {
+        "devices": 50,
+        "rate_hz": 10.0,
+        "duration_s": 60.0,
+        "warmup_s": 8.0,
+        "drain_s": 25.0,
+        "qos": 1,
+        "readings_per_message": 5,
+        "connections_used": 10
+      },
+      "started_at": "2026-10-15T12:52:16.536502+00:00",
+      "duration_s": 59.98,
+      "messages_published": 29921,
+      "messages_failed": 0,
+      "readings_published": 149605,
+      "readings_stored": 149605,
+      "publish_rate_hz": 498.9,
+      "stored_rate_hz": 2494.3,
+      "loss_fraction": 0.0,
+      "dead_letters": 0,
+      "device_to_ingest_ms": {
+        "p50": 24.41,
+        "p95": 38.48,
+        "p99": 44.39,
+        "minimum": -19.48,
+        "maximum": 96.39,
+        "mean": 20.31,
+        "count": 149605
+      },
+      "end_to_end_ms": {
+        "p50": 59.94,
+        "p95": 94.15,
+        "p99": 168.93,
+        "minimum": 20.44,
+        "maximum": 184.04,
+        "mean": 55.67,
+        "count": 108
+      },
+      "notes": []
+    },
+    {
+      "label": "laptop-50dev-20hz",
+      "config": {
+        "devices": 50,
+        "rate_hz": 20.0,
+        "duration_s": 45.0,
+        "warmup_s": 8.0,
+        "drain_s": 30.0,
+        "qos": 1,
+        "readings_per_message": 5,
+        "connections_used": 12
+      },
+      "started_at": "2026-10-15T12:55:33.854598+00:00",
+      "duration_s": 44.99,
+      "messages_published": 43711,
+      "messages_failed": 0,
+      "readings_published": 218555,
+      "readings_stored": 218555,
+      "publish_rate_hz": 971.6,
+      "stored_rate_hz": 4857.8,
+      "loss_fraction": 0.0,
+      "dead_letters": 0,
+      "device_to_ingest_ms": {
+        "p50": 29.43,
+        "p95": 40.4,
+        "p99": 44.44,
+        "minimum": -24.91,
+        "maximum": 56.42,
+        "mean": 24.71,
+        "count": 218555
+      },
+      "end_to_end_ms": {
+        "p50": 69.5,
+        "p95": 120.86,
+        "p99": 138.45,
+        "minimum": 34.07,
+        "maximum": 157.52,
+        "mean": 74.82,
+        "count": 79
+      },
+      "notes": []
+    },
+    {
+      "label": "laptop-100dev-25hz",
+      "config": {
+        "devices": 100,
+        "rate_hz": 25.0,
+        "duration_s": 45.0,
+        "warmup_s": 8.0,
+        "drain_s": 30.0,
+        "qos": 1,
+        "readings_per_message": 5,
+        "connections_used": 16
+      },
+      "started_at": "2026-10-15T12:54:00.341542+00:00",
+      "duration_s": 45.0,
+      "messages_published": 104524,
+      "messages_failed": 0,
+      "readings_published": 522620,
+      "readings_stored": 487100,
+      "publish_rate_hz": 2322.8,
+      "stored_rate_hz": 10824.7,
+      "loss_fraction": 0.06797,
+      "dead_letters": 0,
+      "device_to_ingest_ms": {
+        "p50": 25378.58,
+        "p95": 26542.8,
+        "p99": 26624.68,
+        "minimum": 7586.03,
+        "maximum": 26664.91,
+        "mean": 21457.26,
+        "count": 487100
+      },
+      "end_to_end_ms": {
+        "p50": 8766.75,
+        "p95": 16006.79,
+        "p99": 16006.79,
+        "minimum": 8766.75,
+        "maximum": 16006.79,
+        "mean": 12386.77,
+        "count": 2
+      },
+      "notes": [
+        "1 probes never became queryable within 30s",
+        "6.8% of published readings did not reach storage. The stack could not keep up with the offered rate."
+      ]
+    }
+  ]
+}
