@@ -6,20 +6,19 @@
 #   concurrency        a new push cancels the run still going for the same ref,
 #                      rather than paying for both
 #   paths-ignore       a documentation-only change runs nothing
-#   needs              the eight minute integration job only starts once the two
-#                      minute lint and test jobs have passed, so a typo costs
-#                      two minutes rather than ten
+#   needs              the integration job only starts once lint, the unit tests
+#                      and the firmware build have passed, so a typo costs two
+#                      minutes rather than fifteen
 #   timeout-minutes    on every job. This is the important one: without it a
 #                      hung container or a wedged test run bills until the
 #                      six hour default expires, which on a free private
 #                      repository is a sixth of the monthly allowance gone in
 #                      one run
-#   caching            pip, npm, Terraform providers and Docker layers. The
-#                      Docker cache is the big one, worth about three minutes
-#                      per run
+#   caching            pip, npm, Terraform providers, ccache for the firmware
+#                      and Docker layers. The Docker cache is the big one, worth
+#                      about three minutes per run
 #
-# Roughly 15 minutes of runner time per code push, about 8 minutes of wall
-# clock, and nothing at all for a push that only touches Markdown.
+# Nothing at all runs for a push that only touches Markdown.
 #
 # Note on visibility: a private repository on a free plan is assigned no runner
 # for these jobs and they fail within seconds with no logs. If that happens, the
@@ -54,6 +53,10 @@ permissions:
 env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "22"
+  # ESP-IDF, pinned. Builds the firmware in the firmware job and runs QEMU, as
+  # the esp32-qemu Compose service, in the integration job. Keep in step with
+  # IDF_IMAGE in the Makefile and docker-compose.yml.
+  IDF_IMAGE: espressif/idf:v5.5.4
   # Stop pip asking about upgrades and writing a cache we immediately discard.
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
@@ -121,7 +124,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh edge/firmware/scripts/*.sh edge/firmware/qemu/*.sh
 
   test:
     name: Unit tests
@@ -254,6 +257,17 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Test the IoT Core module with mocked providers
+        # Plan-time assertions on the device policy, the topic rule and the CA
+        # switch, with the AWS and TLS providers mocked: no account, no
+        # credentials. Checks values that validate cannot see, such as the
+        # policy confining each thing to its own topics.
+        env:
+          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+        run: |
+          terraform -chdir=infra/terraform/aws/modules/iot init -backend=false -input=false
+          terraform -chdir=infra/terraform/aws/modules/iot test
+
       - name: Install kustomize
         run: |
           curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
@@ -274,19 +288,69 @@ jobs:
           echo "manifests render"
 
   # ---------------------------------------------------------------------------
+  # Firmware. Host tests for the hardware-independent core, then every ESP-IDF
+  # variant: esp32 and esp32c3 board builds and the esp32 QEMU build that the
+  # integration job boots. The QEMU build is handed over as an artifact.
+  # ---------------------------------------------------------------------------
+  firmware:
+    name: Firmware (ESP-IDF)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tests
+        # The same sources the firmware links, built with the runner's gcc
+        # under AddressSanitizer and UBSan.
+        run: make -C edge/firmware/test/host
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: idf-ccache-${{ env.IDF_IMAGE }}-${{ hashFiles('edge/firmware/**') }}
+          restore-keys: idf-ccache-${{ env.IDF_IMAGE }}-
+
+      - name: Build every variant
+        run: |
+          mkdir -p ~/.ccache
+          docker run --rm \
+            -e IDF_CCACHE_ENABLE=1 -e CCACHE_DIR=/ccache \
+            -v "$PWD/edge/firmware:/project" -v "$HOME/.ccache:/ccache" \
+            -w /project "$IDF_IMAGE" bash scripts/build.sh
+          # The container ran as root; hand the tree back so the cache and
+          # artifact steps can read it.
+          sudo chown -R "$(id -u):$(id -g)" edge/firmware ~/.ccache
+
+      - name: Upload the QEMU build
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-qemu
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            edge/firmware/build-qemu/flash_args
+            edge/firmware/build-qemu/bootloader/bootloader.bin
+            edge/firmware/build-qemu/partition_table/partition-table.bin
+            edge/firmware/build-qemu/telemetry_node.bin
+
+  # ---------------------------------------------------------------------------
   # The expensive one. Brings the whole stack up and asserts the things only a
   # running system can prove: that the broker enforces mutual TLS, that the ACL
   # confines a device to its own topic, that a spoofed payload is rejected, and
   # that the alerting rules fire on what they should and stay quiet on what they
-  # should not.
+  # should not; that certificates can be provisioned, rotated and revoked
+  # against the live broker; and that the ESP32 firmware, booted in QEMU,
+  # publishes into it.
   #
-  # Gated on lint and test so a typo does not cost eight minutes.
+  # Gated on lint, test and firmware so a typo does not cost fifteen minutes.
   # ---------------------------------------------------------------------------
   integration:
     name: End-to-end
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [lint, test]
+    timeout-minutes: 30
+    needs: [lint, test, firmware]
 
     steps:
       - uses: actions/checkout@v4
@@ -307,6 +371,17 @@ jobs:
           # aiomqtt is needed to publish the spoofed and malformed messages the
           # security tests rely on.
           pip install aiomqtt==2.3.0 asyncpg==0.29.0
+
+      - name: Fetch the QEMU firmware build
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-qemu
+          path: edge/firmware/build-qemu
+
+      - name: Start pulling the ESP-IDF image
+        # Several gigabytes and only needed once the stack is up, so it
+        # downloads while the service images build. Waited for below.
+        run: nohup docker pull --quiet "$IDF_IMAGE" > /tmp/idf-pull.log 2>&1 &
 
       - name: Set up Buildx
         # Needed for the type=gha cache backend the CI overlay asks for.
@@ -335,8 +410,24 @@ jobs:
         # need the certificates the PKI job generated inside the volume.
         run: bash scripts/export_certs.sh
 
+      - name: Wait for the ESP-IDF image
+        timeout-minutes: 10
+        run: |
+          until docker image inspect "$IDF_IMAGE" > /dev/null 2>&1; do
+            if ! pgrep -f "docker pull" > /dev/null; then
+              cat /tmp/idf-pull.log
+              docker pull "$IDF_IMAGE"
+            fi
+            sleep 5
+          done
+
       - name: Integration tests
-        run: pytest tests/integration -q -m integration
+        env:
+          # A missing firmware build or IDF image fails the run rather than
+          # skipping the emulated device tests and passing without them.
+          REQUIRE_EMULATED_DEVICE: "1"
+          IDF_IMAGE: ${{ env.IDF_IMAGE }}
+        run: pytest tests/integration -q -m integration -rA
 
       - name: Smoke-test the benchmark harness
         # Short run, but it proves the harness works and that the pipeline loses
@@ -385,4 +476,6 @@ jobs:
         # behind on the runner. The runner is discarded anyway, but a hung
         # `compose down` on a shared runner is somebody else's problem.
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v --remove-orphans
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --profile emulated-device down -v --remove-orphans

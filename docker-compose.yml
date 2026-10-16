@@ -359,6 +359,33 @@ services:
       - --warm-start-hours=${WARM_START_HOURS:-72}
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # An emulated ESP32, on demand only. Boots the real firmware from
+  # edge/firmware/build-qemu in Espressif's QEMU, provisioned from this stack's
+  # PKI and publishes over the same mutual-TLS listener as the fleet. Not
+  # started by `up`; the integration tests and `make device` run it:
+  #
+  #   docker compose --profile emulated-device run --rm --no-deps   #     -e DEVICE_ID=esp32-qemu-0001 esp32-qemu
+  #
+  # The certificate for DEVICE_ID must exist first: scripts/pki.sh device.
+  # ---------------------------------------------------------------------------
+  esp32-qemu:
+    image: ${IDF_IMAGE:-espressif/idf:v5.5.4}
+    profiles: ["emulated-device"]
+    environment:
+      DEVICE_ID: ${DEVICE_ID:-esp32-qemu-0001}
+      SITE_ID: ${SITE_ID:-site-q}
+      TENANT: ${TENANT:-acme}
+      BROKER_HOST: mosquitto
+      BROKER_CN: mosquitto
+      INTERVAL_S: ${DEVICE_INTERVAL_S:-2}
+      FIRMWARE_DIR: /firmware/build-qemu
+    volumes:
+      - certs:/certs:ro
+      - ./edge/firmware:/firmware:ro
+    command: ["bash", "/firmware/qemu/run_device.sh"]
+    restart: "no"
+
 volumes:
   certs:
   redpanda-data:
