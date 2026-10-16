@@ -1,0 +1,10 @@
+# The QEMU build: Espressif's QEMU emulates an OpenCores Ethernet MAC rather
+# than the Wi-Fi radio and has no BME280 on its I2C bus or battery on its ADC.
+# Everything else, TLS, MQTT, NVS provisioning and the sampling loop, is the
+# board firmware unchanged.
+
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_TELEMETRY_NET_OPENETH=y
+CONFIG_TELEMETRY_SENSOR_SIMULATED=y
+# CONFIG_TELEMETRY_BATTERY_ADC is not set
+CONFIG_TELEMETRY_STATUS_LED_GPIO=-1

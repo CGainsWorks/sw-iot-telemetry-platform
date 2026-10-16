@@ -1,0 +1,7 @@
+# Name,     Type, SubType, Offset,   Size
+# nvs holds the device's provisioned identity: ids, broker endpoint and
+# certificates. It is written once per board by the provisioning step and never
+# by the firmware, so it is sized for that and nothing else.
+nvs,        data, nvs,     0x9000,   0x6000
+phy_init,   data, phy,     0xf000,   0x1000
+factory,    app,  factory, 0x10000,  0x1F0000

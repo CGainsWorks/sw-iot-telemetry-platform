@@ -1,0 +1,80 @@
+menu "Telemetry node"
+
+    config TELEMETRY_FW_VERSION
+        string "Firmware version"
+        default "2.0.0"
+        help
+            Semantic version reported in every message. The platform refuses
+            anything that is not MAJOR.MINOR.PATCH.
+
+    choice TELEMETRY_NETWORK
+        prompt "Network link"
+        default TELEMETRY_NET_WIFI
+
+        config TELEMETRY_NET_WIFI
+            bool "Wi-Fi station"
+
+        config TELEMETRY_NET_OPENETH
+            bool "OpenCores Ethernet (QEMU only)"
+            depends on ETH_USE_OPENETH
+            help
+                The Ethernet MAC Espressif's QEMU emulates for the ESP32
+                machine. There is no such MAC on a real chip.
+    endchoice
+
+    config TELEMETRY_SENSOR_SIMULATED
+        bool "Simulated environmental readings (QEMU only)"
+        default n
+        help
+            QEMU has no BME280 on its I2C bus, so the emulated build takes its
+            temperature, humidity and pressure from a deterministic synthetic
+            signal instead. The device says so in its boot status message.
+
+    config TELEMETRY_I2C_SDA_GPIO
+        int "BME280 I2C SDA GPIO"
+        depends on !TELEMETRY_SENSOR_SIMULATED
+        default 21 if IDF_TARGET_ESP32
+        default 4
+
+    config TELEMETRY_I2C_SCL_GPIO
+        int "BME280 I2C SCL GPIO"
+        depends on !TELEMETRY_SENSOR_SIMULATED
+        default 22 if IDF_TARGET_ESP32
+        default 5
+
+    config TELEMETRY_BATTERY_ADC
+        bool "Report battery voltage from an ADC channel"
+        default y
+
+    config TELEMETRY_BATTERY_ADC_CHANNEL
+        int "ADC1 channel for the battery divider"
+        depends on TELEMETRY_BATTERY_ADC
+        default 6 if IDF_TARGET_ESP32
+        default 2
+        help
+            ADC1 channel 6 is GPIO34 on the ESP32, the usual battery sense pin
+            on battery dev boards. On the ESP32-C3, channel 2 is GPIO2.
+
+    config TELEMETRY_BATTERY_DIVIDER_PERMILLE
+        int "Battery divider ratio, in thousandths"
+        depends on TELEMETRY_BATTERY_ADC
+        default 2000
+        help
+            Battery voltage over pin voltage, times 1000. 2000 is the common
+            divide-by-two network.
+
+    config TELEMETRY_STATUS_LED_GPIO
+        int "Status LED GPIO, -1 for none"
+        default 2 if IDF_TARGET_ESP32
+        default 8
+
+    config TELEMETRY_DEEP_SLEEP
+        bool "Deep sleep between samples"
+        default n
+        help
+            Cuts the average draw at the cost of a full network and TLS
+            handshake on every wake. Below an interval of roughly 30 seconds
+            the handshake costs more than staying awake. That figure is
+            arithmetic from datasheet currents, not a measurement.
+
+endmenu

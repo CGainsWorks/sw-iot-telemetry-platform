@@ -1,2 +1,9 @@
-config.h
-.pio/
+# Build trees, one per variant and the configurations idf.py generates from
+# sdkconfig.defaults. The defaults files are the source of truth.
+build/
+build-*/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+test/host/test_telemetry_core

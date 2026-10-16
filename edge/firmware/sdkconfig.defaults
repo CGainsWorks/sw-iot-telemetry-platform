@@ -1,0 +1,18 @@
+# Settings shared by every build. Board builds use this file alone; the QEMU
+# build layers sdkconfig.qemu on top.
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Check certificate validity dates during the handshake. Off by default in
+# ESP-IDF, which would let an expired or not-yet-valid certificate through and
+# make the firmware's insistence on a synchronised clock decorative.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+
+# Parsing the device certificate at boot happens on the main task.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# MQTT 3.1.1, the version both Mosquitto and AWS IoT Core speak.
+CONFIG_MQTT_PROTOCOL_311=y
