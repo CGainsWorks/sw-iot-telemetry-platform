@@ -34,7 +34,9 @@ What is true of this repository today, in one page. The detail is in
   `bench/summarise.py`; a unit test fails if the README and the summary
   disagree.
 - **Tests:** 232 Python unit tests, 37 integration tests against the running
-  stack (6 of them drive the emulated ESP32 and 3 the certificate lifecycle),
+  stack (6 of them drive the emulated ESP32 and 3 the certificate lifecycle;
+  one rollup comparison skips itself on a stack too young to have a settled
+  bucket, as in CI),
   the firmware core's host tests under AddressSanitizer and UBSan, the
   dashboard's Vitest suite, the analytical SQL on DuckDB and the Terraform
   module tests.
