@@ -316,7 +316,12 @@ class TestBrokerSecurity:
         from telemetry_common.topics import telemetry_topic
 
         attacker, victim = "esp32-000001", "esp32-000002"
-        marker = -77.7  # A plausible rssi value nothing else would produce.
+        # A plausible rssi value nothing else can produce. The simulator rounds
+        # rssi to one decimal place, so a three-decimal marker can never collide
+        # with the victim's own readings. An earlier marker of -77.7 did: the
+        # victim reports values around there and the test failed whenever one
+        # landed inside its five minute window.
+        marker = -77.731
 
         payload = {
             "schema_version": "1.1.0",
