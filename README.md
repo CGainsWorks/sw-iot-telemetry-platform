@@ -9,8 +9,8 @@ React dashboard.
 flowchart LR
     subgraph edge["EDGE"]
         direction TB
-        SIM["Device simulator<br/><i>3 profiles, 9 fault modes</i>"]
-        FW["ESP32 + BME280<br/><i>compiles, never flashed</i>"]
+        SIM["Device simulator<br/><i>3 profiles, 8 fault modes</i>"]
+        FW["ESP32 firmware, ESP-IDF<br/><i>emulated in QEMU, never flashed</i>"]
     end
 
     BROKER["<b>BROKER</b><br/>Mosquitto, mutual TLS<br/><i>AWS: IoT Core</i>"]
@@ -25,7 +25,7 @@ flowchart LR
     BQ["<b>ANALYTICS</b><br/>Parquet → BigQuery"]
 
     SIM -->|"mTLS<br/>dt/{tenant}/{site}/{device}/telemetry"| BROKER
-    FW -.->|"same schema"| BROKER
+    FW -->|"mTLS, same schema"| BROKER
     BROKER --> INGEST
     INGEST -->|accepted| STREAM
     INGEST -->|"rejected,<br/>with a reason"| DLQ
@@ -40,8 +40,7 @@ flowchart LR
 
     classDef built fill:#1f6feb,stroke:#58a6ff,color:#fff
     classDef unbuilt fill:#30363d,stroke:#8b949e,color:#c9d1d9,stroke-dasharray: 4 3
-    class SIM,BROKER,INGEST,STREAM,PROC,DB,API,ALERT,WEB,DLQ,BQ built
-    class FW unbuilt
+    class SIM,FW,BROKER,INGEST,STREAM,PROC,DB,API,ALERT,WEB,DLQ,BQ built
 ```
 
 ```bash
@@ -60,7 +59,8 @@ publishing over mutual TLS. Nothing needs installing but Docker.
 
 | | |
 | --- | --- |
-| **Identity** | One X.509 client certificate per device. The broker takes the identity from the certificate and the ACL confines each device to its own topic. A payload claiming to be another device is rejected. |
+| **Identity** | One X.509 client certificate per device. The broker takes the identity from the certificate and the ACL confines each device to its own topic. A payload claiming to be another device is rejected. Provisioning, rotation and revocation are tested against the live broker. |
+| **Firmware** | ESP-IDF, built for esp32 and esp32c3. In CI the esp32 build boots in Espressif's QEMU, connects over mutual TLS and its telemetry is asserted in TimescaleDB. |
 | **Ingestion** | Eight rejection reasons, each stored with the offending payload. A message is never silently dropped. |
 | **Storage** | Four resolutions behind one API that picks the cheapest adequate source and tells you which it used. |
 | **Alerting** | 13 rules with sustained-breach holds, recovery hysteresis and deduplication in the database. |
@@ -69,7 +69,10 @@ publishing over mutual TLS. Nothing needs installing but Docker.
 ## Numbers
 
 All from [`bench/benchmark.py`](bench/benchmark.py) against the full stack on one
-Ryzen 7 5700X. Full method and caveats in [docs/benchmarks.md](docs/benchmarks.md).
+Ryzen 7 5700X desktop and every figure is in the committed
+[`bench/summary.json`](bench/summary.json), condensed from the run files; a unit
+test fails if this table and that file disagree. Full method and caveats in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 | Fleet | Offered | Stored | Loss | Publish → queryable |
 | --- | --- | --- | --- | --- |
@@ -96,7 +99,7 @@ consequential decision in the repository.
 
 By the time any firmware existed, the schema, the topic grammar, the identity
 check, the rollups, the retention ladder, the alerting rules and the dashboard
-had all been exercised against hundreds of thousands of messages. Nine fault
+had all been exercised against hundreds of thousands of messages. Eight fault
 modes are injectable, and each one maps to a platform path that is otherwise
 untestable without waiting for real hardware to misbehave:
 
@@ -202,8 +205,8 @@ was then demonstrated by accident.
 
 ```
 edge/
-  firmware/            ESP32 + BME280, compiles for two targets, never flashed
-  simulator/           the fleet that actually runs: 3 profiles, 9 fault modes
+  firmware/            ESP-IDF, BME280 + mTLS; esp32 and esp32c3; boots in QEMU in CI
+  simulator/           the fleet that actually runs: 3 profiles, 8 fault modes
 services/
   common/              the message contract. Schemas are generated from it.
   ingest/              MQTT to stream, validation, dead-lettering
@@ -217,8 +220,8 @@ infra/
   terraform/aws        VPC, IoT Core, Kinesis, Firehose, S3, ECR, EKS
   terraform/gcp        BigQuery dataset, tables, loader identity
   k8s/                 manifests and a dev overlay
-bench/                 the benchmark every quoted number comes from
-tests/                 224 unit, 25 integration
+bench/                 the benchmark and summary.json behind every quoted number
+tests/                 232 unit, 37 integration
 docs/                  architecture, schema, provisioning, alerts, cost, limits
 ```
 
@@ -226,6 +229,7 @@ docs/                  architecture, schema, provisioning, alerts, cost, limits
 
 | | |
 | --- | --- |
+| [STATUS.md](STATUS.md) | what is complete, what is not and the limitations, on one page |
 | [architecture.md](docs/architecture.md) | the decisions and what was traded for what |
 | [message_schema.md](docs/message_schema.md) | the contract, the versioning policy, every rejection reason |
 | [provisioning.md](docs/provisioning.md) | issuing, rotating with overlap, revoking |
@@ -246,8 +250,11 @@ make teardown          # stop, delete volumes, certificates and exports
 ```bash
 make venv              # local virtualenv, everything editable
 make check             # everything CI checks: lint, types, tests, SQL, infra
-make test              # 224 unit tests, no Docker needed
-make test-integration  # 25 tests against the running stack
+make test              # 232 unit tests, no Docker needed
+make test-integration  # 37 tests against the running stack
+make firmware          # ESP-IDF build of every firmware variant, in a container
+make firmware-test     # host tests for the firmware core
+make device            # boot an emulated ESP32 against the running stack
 make bench             # throughput and latency
 make sample            # one message per device, no broker needed
 ```
@@ -281,13 +288,15 @@ would be the ones nobody had ever run.
 | | |
 | --- | --- |
 | Simulator, broker with mTLS, PKI lifecycle, ingest, stream, processing, TimescaleDB, API, alerting, dashboard, benchmark, analytics | **run, and tested** |
-| Terraform, both roots | `fmt` and `validate` only, **never applied** |
+| Certificate provisioning, rotation and revocation | **run and tested** against the live broker, by a Python client and by the emulated firmware |
+| ESP32 firmware | built with ESP-IDF for esp32 and esp32c3; the esp32 build **run in Espressif's QEMU** in CI, publishing into the stack. Readings in that build are simulated. **Never flashed** |
+| Terraform, both roots | `fmt` and `validate`; the IoT Core module also `terraform test` with mocked providers. **Never applied** |
 | Kubernetes manifests | `kustomize build` only, **never applied** |
-| ESP32 firmware | compiles for two targets, **never flashed** |
 
 There is no hardware and no AWS account behind this repository. The platform runs
-and is tested; the infrastructure and the firmware are written and validated but
-have not been deployed. [docs/limitations.md](docs/limitations.md) is blunter,
+and is tested; the firmware runs under emulation; the infrastructure is written
+and validated but has not been deployed. [STATUS.md](STATUS.md) has the current
+state in one page. [docs/limitations.md](docs/limitations.md) is blunter
 and lists the security work that has not been done as well.
 
 ## Licence

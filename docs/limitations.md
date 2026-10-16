@@ -1,40 +1,56 @@
 # Limitations
 
 What this repository has not done, stated plainly. The short version: the data
-platform runs and is tested; the cloud infrastructure and the hardware are
-written and validated but have never been deployed or flashed.
+platform runs and is tested; the firmware runs under emulation but has never
+been flashed; the cloud infrastructure is written and validated but has never
+been deployed.
 
 ## No hardware
 
 **There is no ESP32 behind this repository.** There is no BME280, no battery, no
 enclosure and no roof.
 
-[`edge/firmware/src/main.cpp`](../edge/firmware/src/main.cpp) compiles cleanly
-for two targets, `esp32dev` and `esp32c3`, against pinned library versions, and
-CI verifies that whenever the firmware changes. It has never been flashed.
+The firmware in [`edge/firmware`](../edge/firmware) is built with ESP-IDF for
+`esp32` and `esp32c3` on every push. The `esp32` build is also booted in
+Espressif's QEMU in CI, where it is provisioned from the stack's PKI, connects
+over mutual TLS and publishes into the platform; the integration tests assert
+its readings in TimescaleDB, a command reaching it, a certificate rotation and a
+revocation. It has never been flashed to a board.
 
-So the following are **unverified**:
+Emulation settles some questions the previous Arduino version left open. The
+handshake order (address, then SNTP, then TLS) works; the mutual-TLS handshake
+with a 2048-bit RSA client certificate completes within the ESP32's default heap
+as QEMU models it; the JSON is accepted by ingest without a single dead letter.
 
-- Whether it actually connects. The mutual-TLS handshake is a real memory
-  constraint on an ESP32, and a 4096-bit CA certificate with a 2048-bit client
-  certificate is close to what the default heap configuration tolerates. The
-  code does the handshake in the right order, after NTP, which is the part that
-  usually goes wrong, but that it fits in RAM is untested.
+What QEMU does not model and so stays **unverified**:
+
+- Wi-Fi. The emulated build uses the OpenCores Ethernet MAC that QEMU provides;
+  the Wi-Fi station code is compiled for both targets and never run.
+- The BME280. QEMU has no sensor on its I2C bus, so the emulated build's
+  temperature, humidity and pressure are **simulated** and labelled as such in
+  the device's boot message. The I2C driver is compiled and never run; its
+  compensation arithmetic is host-tested against the Bosch datasheet formulas
+  and worked example, which is not the same as reading a part.
+- The ADC. The battery reading uses ESP-IDF's calibration schemes rather than a
+  raw conversion, which addresses the ESP32 ADC's non-linearity on paper but
+  no voltage has ever been read.
+- Timing and memory headroom on silicon. Emulation runs at its own pace, which
+  is why the QEMU watchdog is disabled; real heap fragmentation after weeks of
+  reconnects is not something a short emulated run reveals.
 - Power consumption. The deep sleep path is written and the trade-off is
-  reasoned about in the comments, but no figure in this repository comes from a
-  multimeter. The claim that the handshake costs more than staying awake below a
-  30 second interval is arithmetic, not measurement.
-- ADC battery readings. The ESP32 ADC is badly non-linear above about 2.5 V and
-  the code says so. A board making real decisions about battery state wants a
-  calibrated characteristic, and this one has none.
-- Sensor self-heating. A BME280 next to a WiFi radio in a sealed enclosure reads
-  high, by an amount that depends on the enclosure. That offset is real and is
-  not modelled anywhere.
+  reasoned about but no figure in this repository comes from a multimeter. The
+  claim that the handshake costs more than staying awake below a 30 second
+  interval is arithmetic, not measurement.
+- Sensor self-heating. A BME280 next to a Wi-Fi radio in a sealed enclosure
+  reads high, by an amount that depends on the enclosure. Not modelled.
 - Field reliability: antenna performance, flash wear, what happens at -20 degC,
   whether the I2C bus survives a long cable run.
+- Key protection. The device key sits in an unencrypted NVS partition. A
+  production build would turn on flash and NVS encryption or use the digital
+  signature peripheral; neither is configured or tested.
 
 What the simulator **does** verify is that the platform handles the messages a
-device of this shape produces, including nine deliberately injected fault modes.
+device of this shape produces, including eight deliberately injected fault modes.
 That is a genuinely useful thing to have verified, and it is not the same as
 having run a device.
 
@@ -80,8 +96,8 @@ somebody has actually practised. None of that is here.
 
 ## Scale is unproven beyond what was measured
 
-The benchmark numbers in the README come from a real run on one developer laptop
-against Docker Desktop. They are reproducible with one command, and they say
+The benchmark numbers in the README come from real runs on one developer
+desktop against Docker Desktop, condensed into `bench/summary.json`. They are reproducible with one command and they say
 nothing about:
 
 - A fleet of thousands rather than tens. The simulator opens one TLS connection
@@ -156,17 +172,20 @@ and are asserted by automated tests:
 
 - The whole stack from `docker compose up` on a clean machine, including PKI
   generation, schema migration and topic creation.
-- 224 unit tests covering the message contract, the versioning policy, the topic
+- 232 unit tests covering the message contract, the versioning policy, the topic
   grammar, every ingest rejection reason, the rollup arithmetic, source
   selection, rule validation and the simulator's own determinism.
-- 25 integration tests against the running stack, including: an anonymous client
+- 37 integration tests against the running stack, including: an anonymous client
   cannot connect, there is no plaintext port, a device cannot publish to another
   device's topic, a spoofed payload is dead-lettered, replay is idempotent, the
   rollup means match the raw data, the API's retention table matches the
   database's policies, a sustained breach fires exactly one alert, and the
   vibration rule fires on a real fault while staying quiet on duty cycling.
-- A full certificate lifecycle: issue, rotate with an overlap window, revoke,
-  regenerate the CRL.
+- A full certificate lifecycle against the live broker: provision a new device
+  into the running fleet, rotate with an overlap window, revoke, regenerate the
+  CRL, reload the broker. Asserted in `test_certificate_lifecycle.py` and again
+  with the emulated firmware.
 - All five analytical queries, against fixtures shaped so each returns rows.
 - The dashboard, rendering live data from the WebSocket feed.
-- The firmware, compiling for two targets.
+- The firmware, built with ESP-IDF for esp32 and esp32c3 and the esp32 build
+  booted in Espressif's QEMU, publishing over mutual TLS into the stack.

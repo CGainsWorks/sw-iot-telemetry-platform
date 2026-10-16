@@ -222,7 +222,8 @@ The broker has `crlfile` configured, so a revoked certificate is refused at the
 handshake rather than being left to publish until it expires. Note what this
 means operationally: the broker reads the CRL at startup, so in a real
 deployment revocation needs either a broker reload or a short CRL refresh
-interval. On IoT Core there is no equivalent problem, because setting a
+interval. `SIGHUP` is enough: Mosquitto 2.0 re-reads the CRL on reload without
+dropping connected clients and the lifecycle test relies on exactly that. On IoT Core there is no equivalent problem, because setting a
 certificate to `INACTIVE` takes effect immediately.
 
 The CRL also has a `Next Update`, 30 days here. An expired CRL makes Mosquitto
@@ -240,12 +241,35 @@ nobody set up. Regenerating it is part of the routine, not an afterthought.
 | Another device's anything | no | no |
 
 `certs/` is gitignored in its entirety, along with `*.pem`, `*.key` and `*.crt`.
-`edge/firmware/include/config.h` is gitignored for the same reason, and the
-committed `config.h.example` carries placeholders.
 
-For more than a handful of devices, keys should not be in a header file at all:
-provision into NVS at manufacture, or use fleet provisioning so the key is
-generated on the device and never leaves it.
+The firmware holds no identity at all. Each board receives an NVS partition at
+provisioning time with its ids, broker endpoint, CA certificate, certificate and
+key, built with ESP-IDF's `nvs_partition_gen.py`. That is exactly what
+[`edge/firmware/qemu/run_device.sh`](../edge/firmware/qemu/run_device.sh) does
+for the emulated device in the integration tests, from certificates this PKI
+issued; for a board the image is written with `esptool.py write_flash 0x9000`.
+For a real fleet the stronger option is still fleet provisioning, so the key is
+generated on the device and never leaves it, with NVS and flash encryption on.
+
+## Tested, not only documented
+
+[`tests/integration/test_certificate_lifecycle.py`](../tests/integration/test_certificate_lifecycle.py)
+runs the procedure above against the live broker, using the stack's own `pki`
+container and CA:
+
+1. a brand new device is provisioned into the running fleet, its first message
+   is stored and `certs-register` records its certificate;
+2. it is rotated and both the outgoing and the replacement certificate are
+   accepted during the overlap;
+3. the outgoing certificate is revoked. Until the broker is reloaded it is
+   still accepted, which the test asserts because it is the operational gap
+   described under [Revocation](#revocation); after `SIGHUP` it is refused at the
+   handshake and the replacement still works.
+
+[`tests/integration/test_emulated_device.py`](../tests/integration/test_emulated_device.py)
+does the same with the real ESP32 firmware booted in QEMU: provisioned by NVS
+image, rebooted with the rotated certificate (its serial console reports the new
+serial) and refused at the TLS handshake when booted with the revoked one.
 
 ## Verifying it actually works
 

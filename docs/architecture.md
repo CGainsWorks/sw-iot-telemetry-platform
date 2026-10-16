@@ -84,7 +84,7 @@ consequential decision in the repository.
 By the time any firmware existed, the schema, the topic grammar, the identity
 check, the rollups, the retention ladder, the alerting rules and the dashboard
 had all been exercised against hundreds of thousands of messages, including
-deliberately malformed ones. Nine fault modes are injectable, each mapping to a
+deliberately malformed ones. Eight fault modes are injectable, each mapping to a
 platform path that is otherwise untestable without waiting for real hardware to
 misbehave. See [`edge/simulator/telemetry_simulator/faults.py`](../edge/simulator/telemetry_simulator/faults.py).
 
@@ -248,13 +248,48 @@ consumer can perform the same identity check the bridge performs locally. Withou
 it the authenticated identity would be lost at the first hop and the whole
 certificate story would collapse.
 
+### How faithful the local IoT Core stand-in is
+
+Mosquitto is configured to present the same door as IoT Core and the parts
+that matter for security are exercised against the running stack. It is not
+IoT Core and the differences are listed rather than glossed over.
+
+**The same and tested**
+
+| Property | Where it is tested |
+| --- | --- |
+| Mutual TLS only: no certificate, no connection; no plaintext port | `TestBrokerSecurity` in `test_end_to_end.py` |
+| One X.509 certificate per device, issued by one CA | `pki.sh`, run by the `pki` job on every `up` |
+| One authorisation document for the whole fleet, scoped by the authenticated identity (`%u` locally, `${iot:Connection.Thing.ThingName}` on AWS) | ACL test in `test_end_to_end.py`; the AWS policy in `infra/terraform/aws/modules/iot/tests` |
+| A device cannot publish as another device | `test_a_device_cannot_publish_to_another_devices_topic` |
+| A new device provisioned into a running fleet is accepted and recorded | `test_certificate_lifecycle.py` and the emulated ESP32 in `test_emulated_device.py` |
+| Rotation with an overlap window: old and new certificates both accepted | both of the above |
+| A revoked certificate is refused at the handshake; its replacement is not | both of the above |
+| The firmware uses its device id as its MQTT client id, which the AWS policy requires | `edge/firmware/main/link.c`, booted in QEMU |
+
+**Different and why it is acceptable here**
+
+| Local | IoT Core | Consequence |
+| --- | --- | --- |
+| Identity is the certificate's common name | Identity is the thing the certificate is attached to; the common name is ignored | Locally the CN is the thing name by convention. On AWS, `attach-thing-principal` is the step that binds them and it is not exercised. |
+| The client id is not checked | `iot:Connect` is allowed only as `client/${iot:Connection.Thing.ThingName}` | The firmware and the simulator already connect with their device id. The integration tests use suffixed client ids that IoT Core would refuse. |
+| The CRL is read when the broker loads its configuration, so a revocation needs a reload (SIGHUP); the lifecycle test asserts both halves of that | Setting a certificate `INACTIVE` takes effect at once | An operational step locally, documented in [provisioning.md](provisioning.md#revocation). |
+| An unauthorised publish is silently dropped | The client is disconnected | The test asserts the outcome, that nothing is stored, which holds for both. |
+| The broker certificate is signed by the same local CA | The endpoint presents an Amazon Trust Services certificate | The firmware's `ca_cert` NVS key is the broker's trust anchor; on AWS it would hold the Amazon root, not the device CA. |
+| No limits on message rate or size beyond `max_packet_size` | Per-connection and per-account quotas | Not emulated. |
+| Certificates issued by `pki.sh` | Fleet provisioning by claim, or just-in-time registration | Described in [provisioning.md](provisioning.md), not emulated. |
+| `services/ingest` subscribes and validates | A topic rule routes to Kinesis | The rule's SQL and Kinesis action are checked by `terraform test` with mocked providers, never by AWS. |
+
+LocalStack's free edition does not include IoT Core, so there is no closer
+emulator to reach for without a paid licence or a real account.
+
 ## What has actually been run
 
 | Component | Status |
 | --- | --- |
-| Device simulator, 3 profiles, 9 fault modes | run continuously |
+| Device simulator, 3 profiles, 8 fault modes | run continuously |
 | Mosquitto with mutual TLS, ACL, CRL | run, and tested adversarially |
-| PKI: issue, rotate with overlap, revoke, CRL | run end to end |
+| PKI: issue, rotate with overlap, revoke, CRL | run end to end and asserted in the integration suite |
 | Ingest, validation, dead-lettering | run; all 8 rejection reasons observed |
 | Redpanda, 4 topics | run |
 | Processing, rollups, registry | run |
@@ -264,9 +299,9 @@ certificate story would collapse.
 | React dashboard | run |
 | Benchmark | run |
 | Analytics: export and all 5 queries | run, against DuckDB |
-| Terraform, both roots | `fmt` and `validate` only, never applied |
+| Terraform, both roots | `fmt` and `validate`; the IoT module also `terraform test` with mocked providers; never applied |
 | Kubernetes manifests | `kustomize build` only, never applied |
-| ESP32 firmware | compiles for two targets, never flashed |
+| ESP32 firmware, ESP-IDF | built for esp32 and esp32c3; the esp32 build booted in Espressif's QEMU in CI and publishing into the stack; never flashed |
 
 The last three are the honest gaps. [`docs/limitations.md`](limitations.md) is
 blunter about them.
